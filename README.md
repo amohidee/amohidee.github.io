@@ -13,11 +13,17 @@ We are going to make a parallel priority queue implementation and use it to para
 Background:
 The Shortest Path problem, finding the shortest path between two nodes in a graph, is a classic problem in graph theory. This problem has significant applications in various fields such as network analysis, geographical information systems, and routing protocols. Dijkstra’s algorithm is a well known solution to this problem. The algorithm goes as follows:
 For an input graph G with V vertices, weights W, and source vertex S. 
+
 Create an unvisited set and put all nodes into it.
+
 Create an array to keep track of the distance to the source. Make this value for the source itself 0. 
+
 Create a queue that we will use to keep track of the nodes that are seen but not visited.
+
 For a node (starting with the source node): Look at all the unvisited neighbors of the node. Set their distance equal to the weights of their edges (the weights represent the distance from other nodes) + the distance of the current node. Remove the current node from the unvisited set. Add all the neighbors to the queue. Repeat set 4 with the node in the queue with the shortest distance to the source until unvisited is empty.
+
 Each time this algorithm reaches a new node, the path that it took to reach it is the shortest path from the source to the node. Therefore, we have found the shortest path from the source to all other nodes.
+
 However, this code seems very sequential and as such will have a very slow runtime, especially on large graphs (O(V+ElogV) runtime with min heap priority queue). The idea here is to parallelize the priority queue. The priority queue is represented by a min heap. We have two approaches for this. One is to have each processor store its own priority queue. When we want to find the min of the priority queue, each processor finds the min of its own priority queue, then a reduce operation happens across the processors to find the actual min of the priority queue. Another method is to have one priority queue but have multiple processors operate on that one priority queue, but lock the subtrees that the operations are happening in. Because the queue can be very big, there is no point locking the whole tree when only a small subtree of it can be used. Therefore we can have multiple processors operate on the tree at the same time.
 
 Challenge: 
