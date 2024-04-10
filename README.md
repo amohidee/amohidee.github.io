@@ -1,76 +1,49 @@
-# amohidee.github.io
-15418 final project: Parallelizing the APSP algorithm
-Title: Solving Dijkstra’s Algorithm with Parallel Priority Queues. 
+Title: Parallel General Fast Radial Symmetry Transform for Image Segmentation
 
-URL: 
+URL: https://amohidee.github.io/
 
-https://amohidee.github.io/
+Summary: We are going to implement and optimize the general fast radial symmetry algorithm. We will then perform post-processing to turn our detected circles into a segmented image.
 
-Summary:
+Background: Fast Radial Symmetry Transform is a technique used to detect points of radial symmetry, which can be considered as generalized circles. It’s useful for identifying features that exhibit some form of circularity in the image. Some example use cases are detecting cells in biology, as well as finding locations of interest from satellite imaging. The generalized fast radial symmetry algorithm detects transformed circles (ellipses). A circle from one perspective is an ellipse from another and can be represented as a transformation. The algorithm is as follows.
 
-We are going to make a parallel priority queue implementation and use it to parallelize djikstras algorithm. We will then evaluate the performance of this implementation against number of threads and graph properties (denseness, etc…)
+The first step is calculating image gradients, generally done via a convolution. Then, you perform a transformation to calculate the orientation projection image and magnitude projection image. These are combined along with some convolutions to determine the center of the circle, which allows us to increment a vote for this position. Afterwards, we perform some processing to remove redundant and insignificant points. At this point, we have the circle centers. Now, in order to perform image segmentation, we want to paint the circles a solid color. However, we need to find the order in which to paint, as the circles can be detected through occlusion from other image objects. We can model the occlusions as a DAG, and then process the DAG in topological order in parallel as possible. 
 
-Background:
-The Shortest Path problem, finding the shortest path between two nodes in a graph, is a classic problem in graph theory. This problem has significant applications in various fields such as network analysis, geographical information systems, and routing protocols. Dijkstra’s algorithm is a well known solution to this problem. The algorithm goes as follows:
-For an input graph G with V vertices, weights W, and source vertex S. 
+Many of the steps in the first half will benefit greatly from parallelism. Once the topological ordering is generated, we can parallelise the segmentation painting in a number of ways. 
 
-Create an unvisited set and put all nodes into it.
-
-Create an array to keep track of the distance to the source. Make this value for the source itself 0. 
-
-Create a queue that we will use to keep track of the nodes that are seen but not visited.
-
-For a node (starting with the source node): Look at all the unvisited neighbors of the node. Set their distance equal to the weights of their edges (the weights represent the distance from other nodes) + the distance of the current node. Remove the current node from the unvisited set. Add all the neighbors to the queue. Repeat set 4 with the node in the queue with the shortest distance to the source until unvisited is empty.
-
-Each time this algorithm reaches a new node, the path that it took to reach it is the shortest path from the source to the node. Therefore, we have found the shortest path from the source to all other nodes.
-
-However, this code seems very sequential and as such will have a very slow runtime, especially on large graphs (O(V+ElogV) runtime with min heap priority queue). The idea here is to parallelize the priority queue. The priority queue is represented by a min heap. We have two approaches for this. One is to have each processor store its own priority queue. When we want to find the min of the priority queue, each processor finds the min of its own priority queue, then a reduce operation happens across the processors to find the actual min of the priority queue. Another method is to have one priority queue but have multiple processors operate on that one priority queue, but lock the subtrees that the operations are happening in. Because the queue can be very big, there is no point locking the whole tree when only a small subtree of it can be used. Therefore we can have multiple processors operate on the tree at the same time.
-
-Challenge: 
-The challenge is that priority queues are very dependent on the data within the structure. Thus, two processors attempting to load and store at the same time have a lot of dependence on each other. This will make it difficult to parallelise as we have to consider how to manage the communication on insertions, pops, and deletions. 
-
-The modifications we make are also constrained by the complexity constraints of the algorithm. We hope to see a speedup on dijkstra's algorithm, so we need to ensure the cost of managing communication does not outweigh the benefits of parallelism. As we scale to more processors, we want to optimize for and see the performance of our data structure. 
+Challenge: The main challenge of this project is parallely creating a graph representing the layering of the objects described by the ellipses. The end goal of finding the ellipses is shading the objects to create a segmented image. However, in order to do this, we need to know what objects are layered on top of other objects. Ideally we will be doing work on each circle in parallel to determine which objects are layered on top of it. However, there are some divergent execution and load balancing issues here. Not all the ellipses will have overlapping ellipses, and even between ellipses that are occluded there are different amounts of overlapping ellipses to take care of. What we want to avoid is one thread doing no work for the highest layer ellipse and terminating, while another thread gets bogged down calculating a bunch of overlaps.
 
 
 
 Resources:
-https://arxiv.org/abs/1908.09378
-We can use GHC for general performance and then maybe use PSC for high core count experiments. 
+We will be drawing the mathematical basis of the algorithm from https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=1217601 and https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=6247768. 
 
-Goals & Deliverables : 
-We plan to complete 2 implementations of a parallel priority queue(locking the whole heap vs less broadly via “subheaps”) in C++. 
+We will be implementing this sequentially on a CPU, as well as optimize it parallely on a GPU and compare the results. We will have to develop the code from scratch, but will be able to use the equations from the paper as a baseline. 
 
-We also plan to complete a parallelized version of Djikstra’s algorithm that we will use to benchmark performance of our priority queue implementations. We plan for this parallelized version to show improvements over a single threaded implementation. 
+Goals:
 
-We plan to collect results for different types of graph workloads (dense vs sparse graphs, etc…) 
+We plan to complete both a sequential and parallel version of this GFRST algorithm. 
 
-We hope to compare our implementation to the delta stepping algorithm if time permits.
+We plan to compare the two results in terms of speedup, and break down the subcomponents of the algorithms to compare as well. 
 
-If time permits, we hope to implement a CUDA based version of the priority queue that references (https://ieeexplore.ieee.org/document/6507490). 
+We plan to achieve significant speedup on the GPU implementation. 
 
-Platform choice: We plan to use C++ for our coding language, OpenMP for the shared address space single priority queue implementation, and MPI for the multiple priority queue message passing solution. C++, OpenMP, and MPI are industry standards and are known to be low overhead, quick interfaces. 
+If we have time, we will look into using Halide to run this code and compare performance. 
 
-
-
-
-
-
-
-
-
+The demo we show will be a combination of our results (speedup, etc…) as well as output images from the segmentation pipeline. If we have time, we will create a live demo, where we take an image in real time and show its outputs. 
 
 Schedule:
 
 Week
 TODO
-3/31 - 4/6
-Design implementation of multiple priority queues
 4/7 - 4/13
-Working solution to maintaining multiple priority queues in parallel and finding global min
+Working solution to calculating gradients of the blocked input image
 4/14 - 4/20
-Solving Dijkstra’s with multiple priority queue implementation and doing performance evaluations
+Implement an accumulator and be able to get the basic info of each ellipse in the image and start unoptimized graph creation.
 4/21 - 4/27
-Design implementation of single priority queue and begin actual implementation.
+Continue optimizing the graph creation and GFRST algorithm.
 4/28 - 5/4
-Finish implementation and record performance evaluations.
+Finish optimizing and record performance evaluations.
+
+
+
 
