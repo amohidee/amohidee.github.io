@@ -3,6 +3,7 @@
 #include <math.h>
 #include <cuda_runtime_api.h>
 #include <wand/MagickWand.h>
+#include <stdio.h>
 
 long
     y;
@@ -187,4 +188,105 @@ void calculateImageGradient(Image* colorImage, double** gradientArr) {
 
     grayscaleKernel<<<gridDim, blockDim>>>(grayscaleImage, colorImage)
     gradientKernel<<<gridDim, blockDim>>>(gradientArr, grayscaleImage, colorImage->w, colorImage->h);
+}
+
+int main(int argc, char** argv) {
+    if (argc != 3) {
+        std::cerr << "Usage: " << argv[0] << " <input_image> <output_image>\n";
+        return EXIT_FAILURE;
+    }
+
+    MagickWandGenesis();
+    MagickWand* image_wand = NewMagickWand();
+
+    // Load the image
+    if (MagickReadImage(image_wand, argv[1]) == MagickFalse) {
+        ThrowWandException(image_wand);
+        return EXIT_FAILURE;
+    }
+
+    // Get image dimensions
+    unsigned long width = MagickGetImageWidth(image_wand);
+    unsigned long height = MagickGetImageHeight(image_wand);
+
+    // Create an Image 
+    Image* hostImage = new Image(width, height);
+
+    for (y=0; y < height; y++) {
+
+        pixels=PixelGetNextIteratorRow(iterator,&width);
+        contrast_pixels=PixelGetNextIteratorRow(contrast_iterator,&width);
+        if ((pixels == (PixelWand **) NULL))
+            break;
+        for (x=0; x < width; x++)
+            {
+
+            // do stuff here
+            red = PixelGetRed(pixels[x]);
+            green = PixelGetGreen(pixels[x]);
+            blue = PixelGetBlue(pixels[x]);
+
+            Pixel newPixel = malloc(sizeof(Pixel));
+            newPixel.r = red;
+            newPixel.g= green;
+            newPixel.b = blue;
+            
+            hostImage[y * width + x] = newPixel;
+
+            
+            }
+        (void) PixelSyncIterator(contrast_iterator);
+    }
+
+    // Allocate GPU memory for the image
+    Image* deviceImage;
+    cudaMalloc(&deviceImage, sizeof(Image));
+    cudaMemcpy(deviceImage, hostImage, sizeof(Image), cudaMemcpyHostToDevice);
+
+    // Allocate memory for the gradient array
+    double** hostGradientArray;
+    double** deviceGradientArray;
+    hostGradientArray = new double*[height];
+    cudaMalloc(&deviceGradientArray, height * sizeof(double*));
+
+    for (int i = 0; i < height; i++) {
+        cudaMalloc(&(deviceGradientArray[i]), width * sizeof(double));
+    }
+
+    // Calculate the gradient
+    calculateImageGradient(deviceImage, deviceGradientArray);
+
+    // Copy the gradient back to host
+    for (int i = 0; i < height; i++) {
+        hostGradientArray[i] = new double[width];
+        cudaMemcpy(hostGradientArray[i], deviceGradientArray[i], width * sizeof(double), cudaMemcpyDeviceToHost);
+    }
+
+    // TODO: save the gradient to an output file 
+    FILE* file = fopen(argv[2], "w");  // Open the file for writing
+    if (file == NULL) {
+        perror("Failed to open file");
+        return;
+    }
+
+    int len = sizeof(hostGradientArray) / sizeof(hostGradientArray[0]);
+    for (size_t i = 0; i < len; i++) {
+        fprintf(file, "%d\n", hostGradientArray[i]);  // Write each array element to the file
+    }
+
+    fclose(file);  // Close the file
+
+    DestroyMagickWand(image_wand);
+    MagickWandTerminus();
+
+    // Free memory
+    cudaFree(deviceImage);
+    for (int i = 0; i < height; i++) {
+        cudaFree(deviceGradientArray[i]);
+        delete[] hostGradientArray[i];
+    }
+    delete[] hostGradientArray;
+    cudaFree(deviceGradientArray);
+
+    return EXIT_SUCCESS;
 }
