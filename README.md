@@ -1,3 +1,5 @@
+PROPOSAL
+
 Title: Parallel General Fast Radial Symmetry Transform for Image Segmentation
 
 URL: https://amohidee.github.io/
@@ -43,6 +45,42 @@ Implement an accumulator and be able to get the basic info of each ellipse in th
 Continue optimizing the graph creation and GFRST algorithm.
 4/28 - 5/4
 Finish optimizing and record performance evaluations.
+
+
+MILESTONE
+
+Schedule:
+
+Week
+TODO
+4/16-4/21
+Implement accumulator - Anees
+NMS for gradients - Kush
+4/21-4/24
+Naive graph creation - Anees
+Sequential code - Kush
+4/24-4/27
+Optimise graph creation - Anees
+Optimise other steps  - Kush
+4/28-5/1
+Gather data - Anees
+make graphs for performance evaluations - Kush
+
+
+5/1-5/4
+Write the report
+
+
+So far, we have created the framework for ingesting images, and transferring them between CPU and GPU. Additionally, we have initial kernels for calculating the gradients. One kernel will convert the color image to grayscale. The second kernel naively calculates convolutions of the derivative filters, and we have started looking into ways to optimise this step. We also have started work on the sequential version we will be comparing against for speedup. 
+
+
+At this point we are on schedule but there is still a lot of work left to do. Our original ideas for this final project were lacking complexity and needed to be revised, so we only settled on this project recently. However, in regards to the schedule we devised in our proposal, we are on track. Its just that this schedule will have us do a lot of work in the final 3-4 weeks. With this in mind it is unlikely that we will finish early and have ample time to work on extra deliverables, but we should still be able to finish our original plans.
+
+
+At the poster session we can show a live demonstration of our algorithm taking in an input image and outputting a modified version of that image with the shaded circles and with performance numbers.
+
+We have not finished the entire GFRST algorithm so we do not have preliminary results.
+We still haven't figured out how to parallelize the detection of overlapping circles. Part of our algorithm involves shading the detected circles, but to properly shade we need to deduce the layers of the different circles. We have a naive brute force idea of checking each pair of circles for overlap but we haven’t yet figured out our optimal parallel solution. Also we are using ImageMagick for working with images but we are not allowed to install it on the ghc machines, so we need to get that resolved or find a workaround.
 
 
 
