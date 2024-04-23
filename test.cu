@@ -5,6 +5,9 @@
 #include <wand/MagickWand.h>
 #include <stdio.h>
 
+
+#define PI 3.14159265358979323846
+
 long
     y;
 
@@ -49,50 +52,37 @@ typedef struct Image {
     }
 } Image;
 
-MagickWandGenesis();
-magick_wand=NewMagickWand();
-status=MagickReadImage(magick_wand,argv[1]);
-if (status == MagickFalse)
-ThrowWandException(magick_wand);
-/*
-Turn the images into a thumbnail sequence.
-*/
-MagickResetIterator(magick_wand);
-while (MagickNextImage(magick_wand) != MagickFalse)
-MagickResizeImage(magick_wand,106,80,LanczosFilter,1.0);
-/*
-Write the image then destroy it.
-*/
-status=MagickWriteImages(magick_wand,argv[2],MagickTrue);
-if (status == MagickFalse)
-ThrowWandException(magick_wand);
-magick_wand=DestroyMagickWand(magick_wand);
-MagickWandTerminus();
-return(0);
-
-for (y=0; y < (long) MagickGetImageHeight(image_wand); y++)
-  {
-    pixels=PixelGetNextIteratorRow(iterator,&width);
-    contrast_pixels=PixelGetNextIteratorRow(contrast_iterator,&width);
-    if ((pixels == (PixelWand **) NULL) ||
-        (contrast_pixels == (PixelWand **) NULL))
-      break;
-    for (x=0; x < (long) width; x++)
-    {
-
-     // do stuff here
-        red = PixelGetRed(pixels[x]);
-        green = PixelGetGreen(pixels[x]);
-        blue = PixelGetBlue(pixels[x]);
-
-        Pixel newPixel = malloc(sizeof(Pixel));
-        newPixel.r = red;
-        
-
-      
+void multiplyMatrices(int A[2][2], int B[2][2], int result[2][2]) {
+    // Initialize result
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+            result[i][j] = 0;
+        }
     }
-    (void) PixelSyncIterator(contrast_iterator);
-  }
+
+    // parallelize?
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2; j++) {
+            for (int k = 0; k < 2; k++) {
+                result[i][j] += A[i][k] * B[k][j];
+            }
+        }
+    }
+}
+
+void getRotationMatrix(float theta, float R[2][2]) {
+    R[0][0] = cos(theta);
+    R[0][1] = -sin(theta);
+    R[1][0] = sin(theta);
+    R[1][1] = cos(theta);
+}
+
+void getScalingMatrix(float a, float b, float S[2][2]) {
+    S[0][0] = a;
+    S[0][1] = 0;
+    S[1][0] = 0;
+    S[1][1] = b;
+}
 
 
 __device__ __inline__ double convolve(double* a, double* b, int size){
@@ -115,7 +105,7 @@ __global__ void grayscaleKernel(float* grayscaleImage, Image* colorImage) {
                                      .0721f * colorImage->img->b;
 }
 
-__global__ void gradientKernel(float* gradientArr, float* grayscaleImage, int w, int h){
+__global__ void gradientKernel(float* gradientArr, float* gradientMagnitude, float* grayscaleImage, int w, int h){
     int pixelX = (blockIdx.x * blockDim.x) + threadIdx.x;
     int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y;
 
@@ -165,6 +155,7 @@ __global__ void gradientKernel(float* gradientArr, float* grayscaleImage, int w,
     double xGrad = convolve(localPixels, xSobel, 3);
     double yGrad = convolve(localPixels, ySobel, 3);
     gradientArr[pixelY][pixelX] = atan(xGrad, yGrad);
+    gradientMagnitude[pixelY][pixelX] = sqrt(xGrad*xGrad + yGrad*yGrad)
 }
 
 
@@ -189,6 +180,29 @@ void calculateImageGradient(Image* colorImage, double** gradientArr) {
     grayscaleKernel<<<gridDim, blockDim>>>(grayscaleImage, colorImage)
     gradientKernel<<<gridDim, blockDim>>>(gradientArr, grayscaleImage, colorImage->w, colorImage->h);
 }
+
+void gradientVoting(float* gradientMagnitude, float* gradientDirection,
+                    float* orientationProjection, float* magnitudeProjection,
+                    int rows, int cols, int radius) {
+
+
+
+    // radius is set beforehand, parallelize across all radii?
+    // this is for FRST need to chaage to GFRST
+        for (int y = 0; y < rows; ++y) {
+            for (int x = 0; x < cols; ++x) {
+                int index = y * cols + x;
+                float g_mag = gradientMagnitude[index];
+                float g_dir = gradientDirection[index];
+
+
+
+
+            }
+        }
+
+
+    }
 
 int main(int argc, char** argv) {
     if (argc != 3) {
@@ -238,6 +252,10 @@ int main(int argc, char** argv) {
         (void) PixelSyncIterator(contrast_iterator);
     }
 
+    
+
+
+
     // Allocate GPU memory for the image
     Image* deviceImage;
     cudaMalloc(&deviceImage, sizeof(Image));
@@ -252,6 +270,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < height; i++) {
         cudaMalloc(&(deviceGradientArray[i]), width * sizeof(double));
     }
+
+    // allocate gradientMagnitude
 
     // Calculate the gradient
     calculateImageGradient(deviceImage, deviceGradientArray);
