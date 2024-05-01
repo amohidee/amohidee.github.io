@@ -13,12 +13,22 @@ def image_to_rgb_matrix(image_path):
             row = []
             for x in range(width):
                 rgb = img.getpixel((x, y))
+                
                 row.append(rgb)
             rgb_matrix.append(row)
         
-        return rgb_matrix
+        return rgb_matrix, width, height
 
 if __name__ == '__main__':
-    image_path = 'blahblahblah.jpg' 
-    matrix = image_to_rgb_matrix(image_path)
+    fname = 'coins'
+    image_path = f'images/{fname}.jpg' 
+    out_path = f'images/{fname}.txt'
+    matrix, w, h = image_to_rgb_matrix(image_path)
     print(matrix)
+    with open(out_path, "w") as f:
+        f.write(f"{w} {h}\n")
+        for row in matrix:
+            for el in row:
+                s = f"{el[0]}\n{el[1]}\n{el[2]}\n"
+                f.write(s)
+    
