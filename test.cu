@@ -70,14 +70,14 @@ void multiplyMatrices(int A[2][2], int B[2][2], int result[2][2]) {
     }
 }
 
-void getRotationMatrix(float theta, float R[2][2]) {
+void getRotationMatrix(float theta, float** R) {
     R[0][0] = cos(theta);
     R[0][1] = -sin(theta);
     R[1][0] = sin(theta);
     R[1][1] = cos(theta);
 }
 
-void getScalingMatrix(float a, float b, float S[2][2]) {
+void getScalingMatrix(float a, float b, float** S) {
     S[0][0] = a;
     S[0][1] = 0;
     S[1][0] = 0;
@@ -203,6 +203,35 @@ void gradientVoting(float* gradientMagnitude, float* gradientDirection,
 
 
     }
+
+
+void gradientVotingGFRST(float** grad_x, float** grad_y, float** orientationProjection, float** magnitudeProjection, 
+                         int rows, int cols, int radius, float theta, float a, float b) {
+    Matrix2x2 G = matrixMultiply(getRotationMatrix(theta), getScalingMatrix(a, b));
+    // Assuming an appropriate matrix M and its inverse is predefined or calculated elsewhere
+
+    for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < cols; ++x) {
+            float transformed_gx, transformed_gy;
+            transformGradient(grad_x[y][x], grad_y[y][x], &transformed_gx, &transformed_gy, G);
+
+            int pos_x = x + (int)(radius * transformed_gx);
+            int pos_y = y + (int)(radius * transformed_gy);
+            int neg_x = x - (int)(radius * transformed_gx);
+            int neg_y = y - (int)(radius * transformed_gy);
+
+            // Vote for symmetry
+            if (pos_x >= 0 && pos_x < cols && pos_y >= 0 && pos_y < rows) {
+                orientationProjection[pos_y][pos_x] += 1;
+                magnitudeProjection[pos_y][pos_x] += sqrt(grad_x[y][x] * grad_x[y][x] + grad_y[y][x] * grad_y[y][x]);
+            }
+            if (neg_x >= 0 && neg_x < cols && neg_y >= 0 && neg_y < rows) {
+                orientationProjection[neg_y][neg_x] -= 1;
+                magnitudeProjection[neg_y][neg_x] -= sqrt(grad_x[y][x] * grad_x[y][x] + grad_y[y][x] * grad_y[y][x]);
+            }
+        }
+    }
+}
 
 int main(int argc, char** argv) {
     if (argc != 3) {
