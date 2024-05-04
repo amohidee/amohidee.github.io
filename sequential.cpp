@@ -242,6 +242,89 @@ void postGaussNMS(double **postGauss, double **gaussNMS, int **radii,Image* colo
 //     }
 // }
 
+typedef struct {
+    float x;
+    float y;
+    float r;
+} Circle;
+
+typedef struct {
+    int A;
+    int B;
+} Tuple;
+
+
+Circle* getCircles(double*** M) {
+    // count number of circles
+    int count = 0;
+    for(int i = 0; i < color->h; i++){
+        for(int j = 0; j < color->w; j++){
+            double tmp = 0.0;
+            for(int r = 0; r < MAX_RADII; r++){
+                tmp = max(M[r][i][j], tmp_write);
+                
+                // if(tmp_write) printf("TMP: %f\n", tmp_write);
+            }
+            if (tmp > 0.0) {
+                count ++;
+            }
+        }
+    }
+    // use count to generate array
+    Circle* circles = new Circle[count];
+    int curr = 0;
+    for(int i = 0; i < color->h; i++){
+        for(int j = 0; j < color->w; j++){
+            double tmp = 0.0;
+            int bestR = 0;
+            for(int r = 0; r < MAX_RADII; r++){
+                if( M[r][i][j] > tmp){
+                    tmp = M[r][i][j];
+                    bestR = r;
+                }
+            }
+            if (tmp) {
+                circles[curr].y = i;
+                circles[curr].x = j;
+                circles[curr].r = bestR;
+                curr++;
+            }
+            
+        }
+    }
+    return circles;
+}
+
+bool circleCollision(Circle A, Circle B) {
+    double distance = sqrt((B.x - A.x) * (B.x - A.x) + (B.y - A.y) * (B.y - A.y));
+    return distance < (A.r + B.r);
+}
+
+Tuple* getCollidingCircles(Circle* circles) {
+    int n = sizeof(circles) / sizeof(circles[0]);
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (circleCollision(circles[i], circles[j])) {
+                count++;
+            }
+        }
+    }
+
+    Tuple* tuples = new Tuple[count];
+    int curr = 0;
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (circleCollision(circles[i], circles[j])) {
+                tuples[curr].A = i;
+                tuples[curr].B = j;
+                curr++;
+            }
+        }
+    }
+    return tuples;
+}
+
 int main(){
     string basefile = "coins";
     string filename = "images/" + basefile + ".txt";
