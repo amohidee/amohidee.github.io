@@ -4,7 +4,7 @@ import numpy as np
 
 # x  = 768
 # y = 1024
-fname = 'coins'
+fname = 'cells'
 
 with open(f"images/{fname}.txt",'r') as f:
     ln = (f.readline()[:-1]).split(" ")
@@ -82,32 +82,46 @@ def draw_circles(img_path):
                         [(i-rad, j-rad), (i+rad, j+rad)], fill=200
                     )
     plt.imshow(np.transpose(img))
+    plt.show()
 
-    
+def plot_gfrs(img_path):
+    print("plotting frs", img_path)
+    img = np.zeros((y,x))
+    with open(img_path, 'r') as f:
+        for i in range(y):
+            for j in range(x):
+                line = f.readline()[:-1]
+                args = [float(i) for i in line.split(",")]
+                img[i][j] = args[0] + 1
+    print("showing")
+    plt.imshow(np.transpose(img))
+    plt.show()
 
         
 
 if __name__ == '__main__':
-    # print("gray")
-    # imp = f"images/{fname}_gray.txt"
-    # proc_file(imp)
-    # print("grads")
-    # imp = f"images/{fname}_grads.txt"
-    # proc_file(imp)
-    # print("nms")
-    # imp = f"images/{fname}_nmsgrads.txt"
-    # proc_file(imp)
-    # print("radsym")
-    # imp = f"images/{fname}_radsym.txt"
-    # proc_file(imp)
-    # print("gauss")
-    # imp = f"images/{fname}_gauss.txt"
-    # proc_file(imp)
-    # print("gaussnms")
-    # imp = f"images/{fname}_gaussnms.txt"
-    # proc_file(imp)
-    # print("dir grads")
+    print("gray")
+    imp = f"images/{fname}_gray.txt"
+    proc_file(imp)
+    print("grads")
+    imp = f"images/{fname}_grads.txt"
+    proc_file(imp)
+    print("nms")
+    imp = f"images/{fname}_nmsgrads.txt"
+    proc_file(imp)
+    print("radsym")
+    imp = f"images/{fname}_radsym.txt"
+    proc_file(imp)
+    print("gauss")
+    imp = f"images/{fname}_gauss.txt"
+    proc_file(imp)
+    print("gaussnms")
+    imp = f"images/{fname}_gaussnms.txt"
+    proc_file(imp)
+    print("dir grads")
 
+    imp = f"images/{fname}_genradsym.txt"
+    plot_gfrs(imp)
     draw_circles("")
 
     proc_side()
