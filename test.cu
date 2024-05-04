@@ -85,7 +85,7 @@ void getScalingMatrix(float a, float b, float** S) {
 }
 
 
-__device__ __inline__ double convolve(double* a, double* b, int size){
+__device__ __inline__ double convolve(double** a, double** b, int size){
     double r = 0;
     for(int i = 0; i < size; i++){
         for(int j = 0; j < size; j++){
@@ -100,9 +100,9 @@ __global__ void grayscaleKernel(float* grayscaleImage, Image* colorImage) {
     int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y;
     if(pixelX < 0 || pixelX >= colorImage.w || pixelY < 0 || pixelY >= colorImage.h)
         return;
-    grayscaleImage[pixelY][pixelX] = .2125f * colorImage->img->r +
-                                     .7154f * colorImage->img->g + 
-                                     .0721f * colorImage->img->b;
+    grayscaleImage[pixelY][pixelX] = .2125f * colorImage->img[pixelY][pixelX].r +
+                                     .7154f * colorImage->img[pixelY][pixelX].g + 
+                                     .0721f * colorImage->img[pixelY][pixelX].b;
 }
 
 __global__ void gradientKernel(float* gradientArr, float* gradientMagnitude, float* grayscaleImage, int w, int h){
@@ -158,6 +158,41 @@ __global__ void gradientKernel(float* gradientArr, float* gradientMagnitude, flo
     gradientMagnitude[pixelY][pixelX] = sqrt(xGrad*xGrad + yGrad*yGrad)
 }
 
+__device__ void nmsKernel(float** gradientArr, float *gradientMagnitude, float *nmsGradient,int w, int h){
+    int pixelX = (blockIdx.x * blockDim.x) + threadIdx.x;
+    int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y;
+
+    if(pixelX < 1 || pixelX >=(w-1) || pixelY < 1 || pixelY >- (h-1))
+        return;
+    float angleDegrees = 180 / PI * gradientArr[pixelY][pixelX];
+    int direction = (int)(angleDegrees) / 45;
+
+    float n1, n2;
+
+    if(direction == -1){
+        /*
+        \
+         \
+          \       
+        */
+        n1 = gradientMagnitude[pixelY + 1][pixelX - 1];
+        n2 = gradientMagnitude[pixelY - 1][pixelX + 1];
+    }
+    else if(direction == 0){
+        n1 = gradientMagnitude[pixelY + 1][pixelX];
+        n2 = gradientMagnitude[pixelY - 1][pixelX];
+    }
+    else if(direction == 1){
+        n1 = gradientMagnitude[pixelY + 1][pixelX + 1];
+        n2 = gradientMagnitude[pixelY - 1][pixelX - 1];
+    }
+    else {
+        n1 = 0; n2 = 0;
+    }
+    if(gradientMagnitude[pixelY][pixelX] > n1 && gradientMagnitude[pixelY][pixelX] > n2){
+        nmsGradient[pixelY][pixelX] = gradientMagnitude[pixelY][pixelX];
+    }
+}
 
 /*
     need to handle cpu -> gpu && gpu -> cpu outside this
@@ -177,9 +212,11 @@ void calculateImageGradient(Image* colorImage, double** gradientArr) {
     cudaMalloc(grayscaleImage, colorImage.w * sizeof(grayscaleImage));
     for(int i = 0; i < colorImage->h; i++) cudaMalloc(grayscaleImage[i], sizeof(double) * colorImage->w);
 
-    grayscaleKernel<<<gridDim, blockDim>>>(grayscaleImage, colorImage)
+    grayscaleKernel<<<gridDim, blockDim>>>(grayscaleImage, colorImage);
     gradientKernel<<<gridDim, blockDim>>>(gradientArr, grayscaleImage, colorImage->w, colorImage->h);
 }
+
+
 
 void gradientVoting(float* gradientMagnitude, float* gradientDirection,
                     float* orientationProjection, float* magnitudeProjection,

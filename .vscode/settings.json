@@ -1,7 +1,14 @@
 {
     "files.associations": {
+<<<<<<< HEAD
         "array": "cpp",
         "string": "cpp",
         "string_view": "cpp"
+=======
+        "*.tcc": "cpp",
+        "fstream": "cpp",
+        "iosfwd": "cpp",
+        "ostream": "cpp"
+>>>>>>> 9b4757c9030276ca93f4a748b1ce02b39dffd2b5
     }
 }
