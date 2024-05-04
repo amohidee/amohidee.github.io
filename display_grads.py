@@ -1,4 +1,4 @@
-from PIL import Image
+from PIL import Image, ImageDraw
 import matplotlib.pyplot as plt 
 import numpy as np
 
@@ -61,27 +61,54 @@ def proc_side():
     ax3.imshow(dir)
     plt.show()
 
+
+def draw_circles(img_path):
+    Ms = np.zeros((y,x))
+    circles = np.zeros((y,x))
+    img = Image.new('1', (y,x))
+    draw = ImageDraw.Draw(img)
+
+    with open(f"images/{fname}_gaussnms.txt", 'r') as f:
+        for i in range(y):
+            for j in range(x):
+                inp = int(float(f.readline()[:-1]))
+                Ms[i][j] = inp
+    with open(f"images/{fname}_radii.txt", 'r') as f:
+        for i in range(y):
+            for j in range(x):
+                rad = int(float(f.readline()[:-1]))
+                if(Ms[i][j] > 2000):
+                    draw.ellipse(
+                        [(i-rad, j-rad), (i+rad, j+rad)], fill=200
+                    )
+    plt.imshow(np.transpose(img))
+
+    
+
         
 
 if __name__ == '__main__':
-    print("gray")
-    imp = f"images/{fname}_gray.txt"
-    proc_file(imp)
-    print("grads")
-    imp = f"images/{fname}_grads.txt"
-    proc_file(imp)
-    print("nms")
-    imp = f"images/{fname}_nmsgrads.txt"
-    proc_file(imp)
-    print("radsym")
-    imp = f"images/{fname}_radsym.txt"
-    proc_file(imp)
-    print("gauss")
-    imp = f"images/{fname}_gauss.txt"
-    proc_file(imp)
-    print("gaussnms")
-    imp = f"images/{fname}_gaussnms.txt"
-    proc_file(imp)
-    print("dir grads")
+    # print("gray")
+    # imp = f"images/{fname}_gray.txt"
+    # proc_file(imp)
+    # print("grads")
+    # imp = f"images/{fname}_grads.txt"
+    # proc_file(imp)
+    # print("nms")
+    # imp = f"images/{fname}_nmsgrads.txt"
+    # proc_file(imp)
+    # print("radsym")
+    # imp = f"images/{fname}_radsym.txt"
+    # proc_file(imp)
+    # print("gauss")
+    # imp = f"images/{fname}_gauss.txt"
+    # proc_file(imp)
+    # print("gaussnms")
+    # imp = f"images/{fname}_gaussnms.txt"
+    # proc_file(imp)
+    # print("dir grads")
+
+    draw_circles("")
+
     proc_side()
     

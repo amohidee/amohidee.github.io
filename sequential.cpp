@@ -211,6 +211,8 @@ void postGaussNMS(double **postGauss, double **gaussNMS, int **radii,Image* colo
     }
 }
 
+// void elipseResponseMap(double *****Mg, double *****Og, double **gradX, double **gradY, double **gradientDir, Image *color)
+
 //elipses
 // void responseMap(double *****Mg, double *****Og, double **gradX, double **gradY, double **gradientDir){
 //     for(int i = 0; i < color->h; i++){
@@ -281,6 +283,10 @@ int main(){
     for(int i = 0; i < color->h; i++) gradX[i] = (double*) calloc(color->w, sizeof(double));
     gradY = (double**)calloc(color->h, sizeof(double*));
     for(int i = 0; i < color->h; i++) gradY[i] = (double*) calloc(color->w, sizeof(double));
+
+    int **best_radii;
+    best_radii = (int**)calloc(color->h, sizeof(int*));
+    for(int i = 0; i < color->h; i++) best_radii[i] = (int*) calloc(color->w, sizeof(int));
 
     printf("arrs init\n");
 
@@ -370,7 +376,7 @@ int main(){
     postGauss = (double**)calloc(color->h, sizeof(double*));
     for(int i = 0; i < color->h; i++) postGauss[i] = (double*) calloc(color->w, sizeof(double));
 
-    gaussConvolve(M, postGauss, color);
+    gaussConvolve(M, postGauss, best_radii, color);
 
     ofstream gauss_file("images/" + basefile + "_gauss.txt");
     printf("writing grads\n");
@@ -384,9 +390,7 @@ int main(){
     gaussNms = (double**)calloc(color->h, sizeof(double*));
     for(int i = 0; i < color->h; i++) gaussNms[i] = (double*) calloc(color->w, sizeof(double));
 
-    int **best_radii;
-    best_radii = (int**)calloc(color->h, sizeof(int*));
-    for(int i = 0; i < color->h; i++) best_radii[i] = (int*) calloc(color->w, sizeof(int));
+    
 
     postGaussNMS(postGauss, gaussNms, best_radii, color);
     ofstream post_gauss_nms("images/" + basefile + "_gaussnms.txt");
@@ -396,6 +400,15 @@ int main(){
         }
     }
     post_gauss_nms.close();
+
+    ofstream radii_file("images/" + basefile + "_radii.txt");
+    for(int i = 0; i < color->h; i++){
+        for(int j = 0; j < color->w; j++){
+            radii_file << best_radii[i][j] << endl;
+        }
+    }
+    radii_file.close();
+
 
     unsigned long end = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
