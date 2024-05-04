@@ -257,11 +257,13 @@ typedef struct {
 Circle* getCircles(double*** M) {
     // count number of circles
     int count = 0;
-    for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
+    int h = sizeof(M[0]) / sizeof(M[0][0]);
+    int w = sizeof(M[0][0]) / sizeof(M[0][0][0]);
+    for(int i = 0; i < h; i++){
+        for(int j = 0; j < w; j++){
             double tmp = 0.0;
             for(int r = 0; r < MAX_RADII; r++){
-                tmp = max(M[r][i][j], tmp_write);
+                tmp = max(M[r][i][j], tmp);
                 
                 // if(tmp_write) printf("TMP: %f\n", tmp_write);
             }
@@ -273,8 +275,8 @@ Circle* getCircles(double*** M) {
     // use count to generate array
     Circle* circles = new Circle[count];
     int curr = 0;
-    for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
+    for(int i = 0; i < h; i++){
+        for(int j = 0; j < w; j++){
             double tmp = 0.0;
             int bestR = 0;
             for(int r = 0; r < MAX_RADII; r++){
@@ -324,6 +326,9 @@ Tuple* getCollidingCircles(Circle* circles) {
     }
     return tuples;
 }
+
+
+// Circle checkOnTop
 
 int main(){
     string basefile = "coins";
