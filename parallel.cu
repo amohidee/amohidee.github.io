@@ -1,4 +1,7 @@
 #include <bits/stdc++.h>
+#include <cuda.h>
+#include <cuda_runtime.h>
+
 using namespace std;
 
 #define PI 3.14159265358979323846
@@ -111,52 +114,113 @@ __global__ void NMSKernel(double *gradients, double *gradientDir, double *nms_gr
 __global__ void grayscaleKernel(Pixel* img, double* grayscaleImg, int width, int height) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (x < width && y < height) {
-        int idx = y * width + x;
-        Pixel pixel = img[idx];
-        grayscaleImg[idx] = 0.2125 * pixel.r + 0.7154 * pixel.g + 0.0721 * pixel.b;
+    // if(!x && !y)
+    
+    if (x < img_width && y < img_height) {
+        int idx = get_2d_idx(y,x);
+        
+        grayscaleImg[idx] = 0.2125 * color_image_d[3 * idx] 
+                            + 0.7154 * color_image_d[3 * idx + 1] 
+                            + 0.0721 * color_image_d[3 * idx + 2];
+        if(grayscaleImg[idx] == 0){
+            printf("(%d, %d) (%d,%d) wrote 0 to grayscale\n", y, x, img_height, img_width);
+        }
+        // printf("grayscale, %d, %d | %d, %d | %d ((%d,%d,%d)>%f)\n",
+        //          y, x , img_height, img_width, idx, color_image_d[3 * idx],
+        //          color_image_d[3 * idx + 1], color_image_d[3 * idx + 2],  grayscaleImg[idx]);
     }
+    else {
+        // printf("(%d, %d) (%d,%d) did not write to grayscale\n", y, x, img_height, img_width);
+    }
+
+    if(y == 0 && x == 3){
+        int idx = get_2d_idx(y,x);
+        printf("PRINT GRAY TEST, idx = %d, v = %f\n", idx , grayscaleImg[idx]);
+    }
+    // __syncthreads();
 }
 
-
-__global__ void gradientKernel(double* grayscaleImg, double* gradients, double* gradX, double* gradY, double* gradientDir, int width, int height) {
+__global__ void gradientKernel(double *grayscaleImg, double *gradients, double *gradX, double *gradY, double *gradientDir) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (x > 0 && y > 0 && x < width - 1 && y < height - 1) {
+    int flat_idx = get_2d_idx(y, x);
+    if (x > 0 && y > 0 && x < (img_width - 1) && y < (img_height - 1)) {
         double xSobel[3][3] = {{1, 0, -1}, {2, 0, -2}, {1, 0, -1}};
         double ySobel[3][3] = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
         double xg = 0, yg = 0;
-
+        if(y == 504 && x == 590){
+            printf("gray value is %f\n ", grayscaleImg[flat_idx]);
+        }
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -1; dx <= 1; dx++) {
-                double pixel = grayscaleImg[(y + dy) * width + (x + dx)];
+                double pixel = grayscaleImg[get_2d_idx(y + dy, x + dx)];
                 xg += pixel * xSobel[dy + 1][dx + 1];
                 yg += pixel * ySobel[dy + 1][dx + 1];
+                if(y == 504 && x == 590){
+                    printf("iterating through (%d, %d) gray =%f\n", y+dy, x+dx, pixel);
+                }
+                
             }
         }
+        
         double mag = sqrt(xg * xg + yg * yg);
-        gradients[y * width + x] = (mag > 200) ? mag : 0;
-        gradX[y * width + x] = xg;
-        gradY[y * width + x] = yg;
-        double angle = atan2(yg, xg);
-        if(isnan(gradientDir[y * width + x])) {
-            gradientDir[y * width + x] = PI / 2 * ((yg > 0) - (yg < 0));
+        gradients[flat_idx] = (mag > 200) ? mag : 0;
+        if(y == 504 && x == 590){
+            printf("(%d, %d) has grads, (%f, %f) = %f\n", y, x, xg, yg, mag);
         }
+        gradX[flat_idx] = xg;
+        gradY[flat_idx] = yg;
+        double angle = atan(yg/xg);
+        if(isnan(gradientDir[flat_idx])) gradientDir[flat_idx] = PI / 2 * ((yg > 0) - (yg < 0));
     }
+    else {
+        // printf("(%d, %d) (%d,%d) did not write to gradients\n", y, x, img_height, img_width);
+    }
+    // __syncthreads();
 }
 
-
-__global__ void radialSymmetryKernel(double *gradX, double *gradY, double *gradients, double *O, double *M, int width, int height, int max_radii) {
+__global__ void NMSKernel(double *gradients, double *gradientDir, double *nms_gradients) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x < width && y < height && gradients[y * width + x] != 0) {
-        double dy = gradY[y * width + x] / gradients[y * width + x];
-        double dx = gradX[y * width + x] / gradients[y * width + x];
+    if (x > 0 && y > 0 && x < img_width - 1 && y < img_height - 1) {
+        int idx = y * img_width + x;
+        double n1, n2;
+        if (gradients[idx] != 0) {
+            double dir = gradientDir[idx];
+            if (dir > PI / 4 || dir < -PI / 4) {
+                n1 = gradients[(y - 1) * img_width + x];
+                n2 = gradients[(y + 1) * img_width + x];
+            } else if (dir > 0) {
+                n1 = gradients[(y - 1) * img_width + (x + 1)];
+                n2 = gradients[(y + 1) * img_width + (x - 1)];
+            } else if (dir > -PI / 4) {
+                n1 = gradients[(y + 1) * img_width + (x + 1)];
+                n2 = gradients[(y - 1) * img_width + (x - 1)];
+            } else {
+                n1 = 0;
+                n2 = 0;
+            }
 
-        for (int r = 1; r < max_radii; r++) {
+            if (gradients[idx] >= n1 && gradients[idx] >= n2) {
+                nms_gradients[idx] = gradients[idx];
+            } else {
+                nms_gradients[idx] = 0;
+            }
+        }
+    }
+    // __syncthreads();
+}
+
+__global__ void radialSymmetryKernel(double *gradX, double *gradY, double *gradients, double *O, double *M) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < img_width && y < img_height && gradients[y * img_width + x] != 0) {
+        double dy = gradY[y * img_width + x] / gradients[y * img_width + x];
+        double dx = gradX[y * img_width + x] / gradients[y * img_width + x];
+
+        for (int r = 1; r < MAX_RADII; r++) {
             int p_plus_y = y + dy * r;
             int p_plus_x = x + dx * r;
             int p_minus_y = y - dy * r;
@@ -164,21 +228,20 @@ __global__ void radialSymmetryKernel(double *gradX, double *gradY, double *gradi
 
 
             // jsut using atomic add but we can change it to the blocking method
-            if (p_plus_y >= 0 && p_plus_y < height && p_plus_x >= 0 && p_plus_x < width) {
-                atomicAddDouble(&O[r * height * width + p_plus_y * width + p_plus_x], 1.0);
-                atomicAddDouble(&M[r * height * width + p_plus_y * width + p_plus_x], gradients[y * width + x]);
+            if (p_plus_y >= 0 && p_plus_y < img_height && p_plus_x >= 0 && p_plus_x < img_width) {
+                atomicAdd(&O[r * img_height * img_width + p_plus_y * img_width + p_plus_x], 1);
+                atomicAdd(&M[r * img_height * img_width + p_plus_y * img_width + p_plus_x], gradients[y * img_width + x]);
             }
-            if (p_minus_y >= 0 && p_minus_y < height && p_minus_x >= 0 && p_minus_x < width) {
-                atomicAddDouble(&O[r * height * width + p_minus_y * width + p_minus_x], -1.0);
-                atomicAddDouble(&M[r * height * width + p_minus_y * width + p_minus_x], -gradients[y * width + x]);
+            if (p_minus_y >= 0 && p_minus_y < img_height && p_minus_x >= 0 && p_minus_x < img_width) {
+                atomicAdd(&O[r * img_height * img_width + p_minus_y * img_width + p_minus_x], -1);
+                atomicAdd(&M[r * img_height * img_width + p_minus_y * img_width + p_minus_x], -gradients[y * img_width + x]);
             }
         }
     }
+    // __syncthreads();
 }
 
-
-//gaussian convolve
-__global__ void gaussConvolve1(double *M, double *postGauss, int *radii, Image *color, int width, int height){
+__global__ void gaussConvolve1(double *M, double *postGauss, int *radii){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -191,18 +254,18 @@ __global__ void gaussConvolve1(double *M, double *postGauss, int *radii, Image *
     double t = 0;
     int best_r = 0;
     for(int r = 0; r < MAX_RADII; r++){
-        // t = max(M[r][i][j], t);
-        if(M[r*width*height + y*width + x] > t){
+        if(M[r*img_width*img_height + y*img_width + x] > t){
             best_r = r;
-            t = M[r*width*height + y*width + x];
+            t = M[r*img_width*img_height + y*img_width + x];
         }
     }
-    radii[y*width + x] = best_r;
-    M[0*width*height + y*width + x] = t;
+    radii[y*img_width + x] = best_r;
+    M[0*img_width*img_height + y*img_width + x] = t;
+    // __syncthreads();
 }
 
 
-__global__ void gaussConvolve2(double *M, double *postGauss, int *radii, Image *color, int width, int height){
+__global__ void gaussConvolve2(double *M, double *postGauss, int *radii){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -211,41 +274,30 @@ __global__ void gaussConvolve2(double *M, double *postGauss, int *radii, Image *
         {2.0/16.0, 4.0/16.0, 2.0/16.0},
         {1.0/16.0, 2.0/16.0, 1.0/16.0}
     };
-
-    // printf("(%d, %d)", i, j);
     double g = 0;
     for(int dy = 0; dy < 3; dy++){
         for(int dx = 0; dx < 3; dx++){
-            // printf("(%d, %d), %f || ", dy, dx, gauss[dy][dx]);
-            g += M[(y + dy) * width + (x + dx)] * gauss[dy][dx];
-            if(g != 0){
-                // printf("(%d,%d) %f, %f\n", i, j, M[0][dy+i-1][dx+j-1], gauss[dy][dx]);
-            }
+            g += M[(y + dy) * img_width + (x + dx)] * gauss[dy][dx];
         }
     }
-    // printf("\n");
-    // printf("(%d,%d)->%f\n", i,j, g);
-    postGauss[y * width + x] = (g > THRESH) ? g : 0;
-
-
-
+    postGauss[y * img_width + x] = (g > THRESH) ? g : 0;
+    // __syncthreads();
 }
 
-
-__global__ void postGaussNMSKernel(double *postGauss, double *gaussNMS, int *radii, int width, int height) {
+__global__ void postGaussNMSKernel(double *postGauss, double *gaussNMS, int *radii) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x > 0 && y > 0 && x < width - 1 && y < height - 1) {
-        int idx = y * width + x;
+    if (x > 0 && y > 0 && x < img_width - 1 && y < img_height - 1) {
+        int idx = y *img_width + x;
         double maxNeighbor = 0.0;
         // fidn the max value in the block and keep track of it
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -1; dx <= 1; dx++) {
-                int neighbor_idx = (y + dy) * width + (x + dx);
+                int neighbor_idx = (y + dy) * img_width + (x + dx);
                 if (dy != 0 || dx != 0) {
                     if(maxNeighbor <= postGauss[neighbor_idx]){
-                            maxNeighbor = postGauss[neighbor_idx];
+                        maxNeighbor = postGauss[neighbor_idx];
                     }
                 }
             }
