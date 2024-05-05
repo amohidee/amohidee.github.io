@@ -8,9 +8,31 @@ using namespace std;
 #define MAX_RADII 50
 #define Kn 9.9
 #define THRESH 1000
-#define angular_granularity 60
+#define angular_granularity 360
+#define LOG true
 
-//typedef pair<int,int> pii;
+#define FNAME "coins"
+
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+   if (code != cudaSuccess) 
+   {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+   }
+}
+
+// __constant__ __device__ int img_params[2] = {1024, 768};
+__constant__ __device__ int img_width = 1024;
+__constant__ __device__  int img_height = 768;
+__constant__ __device__ int d_a_vals[4] = {2, 4, 6, 8};
+__constant__ __device__ int d_b_vals[4] = {2, 4, 6, 8};
+
+const vector<int> a_vals = {2, 4, 6, 8};
+const vector<int> b_vals = {2, 4, 6, 8};
+
+int img_width_c, img_height_c;
 
 typedef struct pii {
     int first;
@@ -18,29 +40,13 @@ typedef struct pii {
 } pii;
 
 typedef struct pdd {
-    double first;
-    double second;
+    float first;
+    float second;
 } pdd;
-
-
 
 typedef struct Pixel {
     uint8_t r,g,b;
 } Pixel;
-
-typedef struct Image {
-    int w, h;
-    Pixel** img;
-    Image(int width, int height) {
-        w = width; 
-        h = height;
-        img = (Pixel**)calloc(h, sizeof(Pixel*) * h);
-        for(int i = 0; i < h ;i++){
-            img[i] = (Pixel*)calloc(w, sizeof(Pixel));
-        }
-    }
-} Image;
-
 
 __device__ void matInv(double (&A)[2][2], double (&A_inv)[2][2]){
     float det = 1 / (A[0][0] * A[1][1] - A[0][1] * A[1][0]);
@@ -59,59 +65,318 @@ __device__ void M_mults(double (&M)[2][2], double (&res)[2][2]){
     res[1][1] = M[1][1] * M_inv[0][0] - M[1][0] * M_inv[1][0];
 }
 
+typedef struct Image {
+    int w, h;
+    Pixel** img;
+    Image(int width, int height) {
+        w = width; 
+        h = height;
+        img = (Pixel**)calloc(h, sizeof(Pixel*) * h);
+        for(int i = 0; i < h ;i++){
+            img[i] = (Pixel*)calloc(w, sizeof(Pixel));
+        }
+    }
+} Image;
 
-
-__device__ double atomicAddDouble(double* address, double val)
-{
-    unsigned long long int* address_as_ull =
-                              (unsigned long long int*)address;
-    unsigned long long int old = *address_as_ull, assumed;
-
-    do {
-        assumed = old;
-        old = atomicCAS(address_as_ull, assumed,
-                        __double_as_longlong(val +
-                               __longlong_as_double(assumed)));
-
-    // Note: uses integer comparison to avoid hang in case of NaN (since NaN != NaN)
-    } while (assumed != old);
-
-    return __longlong_as_double(old);
+__device__ int get_2d_idx(int i, int j){
+    return (i * img_width) + j;
 }
 
-__global__ void NMSKernel(double *gradients, double *gradientDir, double *nms_gradients, int width, int height) {
+// __global__ void aellipseResponseMapKernel(double *Mg, double *Og, double *gradX, double *gradY, double *gradients, double *gradientDir){
+//     printf("x\n");
+//     // Mg [theta][a][b][y][x]
+//     // Og [theta][a][b][y][x]
+//     int x = blockIdx.x * blockDim.x + threadIdx.x;
+//     int y = blockIdx.y * blockDim.y + threadIdx.y;
+//     int idx = y * img_width + img_height;
+//     printf("(%d, %d) voting on ellipses at all\n", y, x);
+//     if (x > 0 && y > 0 && x < img_width - 1 && y < img_height - 1 && gradients[y*img_width + x] ) {
+        
+//         //pii p = {y,x};
+//         pii p;
+//         p.first = y;
+//         p.second = x;
+//         double dy = (gradY[idx] / gradients[idx]);
+//         double dx = (gradX[idx] / gradients[idx]);
+
+//         int size_a = sizeof(d_a_vals) / sizeof(int);
+//         int size_b = sizeof(d_b_vals) / sizeof(int);
+//         // printf("(%d, %d) -> {%f, %f} |%f|\n", i, j, gradY[i][j], gradX[i][j], gradients[i][j]);
+//         // printf("processing pixel %d, %d\n", i, j);
+//         // for(int degr = 0; degr < 360; degr += angular_granularity){
+//         for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++) {
+//             int degr = degr_idx * angular_granularity;
+//             double theta = degr * PI/180.0;
+//             for(int a_idx = 1; a_idx < size_a; a_idx++){
+//                 for(int b_idx = 1; b_idx < size_b; b_idx++){
+//                     int a = d_a_vals[a_idx];
+//                     int b = d_b_vals[b_idx];
+//                     double G[2][2] = {
+//                         {a * cos(theta), -b * sin(theta)},
+//                         {a * sin(theta),  b * cos(theta)},
+//                     };
+//                     double transform_matrix[2][2];
+//                     M_mults(G, transform_matrix);
+//                     pdd grad_t;
+//                     grad_t.first = dy * transform_matrix[0][0] + dx * transform_matrix[0][1];
+//                     grad_t.second = dy * transform_matrix[1][0] + dx * transform_matrix[1][1];
+//                     // printf("generated transformed gradients {%f, %f} from {%f, %f}\n", grad_t.first, grad_t.second, dy, dx);
+//                     for(int n = 1; n < MAX_RADII; n++){
+//                         pdd p_plus;
+//                         p_plus.first = p.first + grad_t.first * n;
+//                         p_plus.second = p.second + grad_t.second * n;
+
+//                         pdd p_minus;
+//                         p_minus.first = p.first - grad_t.first * n;
+//                         p_minus.second = p.second - grad_t.second * n;
+//                         // printf("for (theta,a,b) = (%d,%d,%d), have points +(%d,%d) -(%d,%d)\n",
+//                         //         degr, a, b, p_plus.first, p_plus.second, p_minus.first, p_minus.second);
+//                         if(p_plus.first >= 0 && p_plus.first < img_height && p_plus.second >= 0 && p_plus.first < img_width){
+//                             int idx = (degr_idx * (360/angular_granularity) * size_a * size_b * img_width) + (a_idx * size_a * size_b * img_width) + (b_idx * size_b * img_width) + (p_plus.first * img_width) + p_plus.second;
+//                             printf("(%d, %d) voting for ellipses on (%f, %f) + (%f)\n", y, x, p_plus.first, p_plus.second, gradients[y * img_width + x]);
+//                             // Og[idx] += 1;
+//                             atomicAdd(&Og[idx], 1.0);
+//                             // Mg[idx] += gradients[y * width + x];
+//                             atomicAdd(&Mg[idx], gradients[y * img_width + x]);
+//                         }
+//                         if(p_minus.first >= 0 && p_minus.first < img_height && p_minus.second >= 0 && p_minus.first < img_width){
+//                             int idx = (degr_idx * (360/angular_granularity) * size_a * size_b * img_width) + (a_idx * size_a * size_b * img_width) + (b_idx * size_b * img_width) + (p_minus.first * img_width) + p_minus.second;
+//                             // Og[idx] -= 1;
+//                             atomicAdd(&Og[idx], -1.0);
+//                             // Mg[idx] -= gradients[i][j];
+//                             atomicAdd(&Mg[idx], -gradients[y * img_width + x]);
+//                         }
+//                     }        
+//                 }
+//             }
+//         }
+//     }
+// }
+
+
+__global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, double *gradY, double *gradients){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int size_a = sizeof(d_a_vals) / sizeof(int);
+    int size_b = sizeof(d_b_vals) / sizeof(int);
+    int idx = y * img_width + x;
+    if(y < img_height && y >= 0 && x < img_width && x >= 0){
+        if(gradients[idx] != 0){
 
-    if (x > 0 && y > 0 && x < width - 1 && y < height - 1) {
-        int idx = y * width + x;
-        double n1, n2;
-        if (gradients[idx] != 0) {
-            double dir = gradientDir[idx];
-            if (dir > PI / 4 || dir < -PI / 4) {
-                n1 = gradients[(y - 1) * width + x];
-                n2 = gradients[(y + 1) * width + x];
-            } else if (dir > 0) {
-                n1 = gradients[(y - 1) * width + (x + 1)];
-                n2 = gradients[(y + 1) * width + (x - 1)];
-            } else if (dir > -PI / 4) {
-                n1 = gradients[(y + 1) * width + (x + 1)];
-                n2 = gradients[(y - 1) * width + (x - 1)];
-            } else {
-                n1 = 0;
-                n2 = 0;
+            double dy = gradY[idx] / gradients[idx];
+            double dx = gradX[idx] / gradients[idx];
+            for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+                int degr = degr_idx * angular_granularity;
+                double theta = degr * PI / 180.0;
+                for(int a_idx = 1; a_idx < size_a; a_idx++){
+                    for(int b_idx = 1; b_idx < size_b; b_idx++){
+                        // printf("(%d, %d) in (%d, %d, %d)\n", y, x, degr_idx, a_idx, b_idx);
+                        int a = d_a_vals[a_idx];
+                        int b = d_b_vals[b_idx];
+                        double G[2][2] = {
+                            {a * cos(theta), -b * sin(theta)},
+                            {a * sin(theta),  b * cos(theta)},
+                        };
+                        double transform_matrix[2][2];
+                        M_mults(G, transform_matrix);
+                        double grad_t_y = dy * transform_matrix[0][0] + dx * transform_matrix[0][1];
+                        double grad_t_x = dy * transform_matrix[1][0] + dx * transform_matrix[1][1];
+                        // int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+                        //     a_idx * size_b * img_width * img_height +
+                        //     b_idx * img_width * img_height +
+                        //     y * img_height +
+                        //     x;
+                        // printf("(%d, %d), (%f, %f)\n", y, x, grad_t_y, grad_t_x);
+                        for(int n = 1; n < MAX_RADII; n++){
+                            int p_plus_y  = y + grad_t_y * n;
+                            int p_plus_x  = x + grad_t_x * n;
+                            // printf("(%d, %d)-(%d,%d) voted\n", y, x, p_plus_y, p_plus_x);
+                            int p_minus_y = y - grad_t_y * n;
+                            int p_minus_x = x - grad_t_x * n;
+                            if(p_plus_y >= 0 && p_plus_y < img_height && p_plus_x >= 0 && p_plus_x < img_width){
+                                int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+                                            a_idx * size_b * img_width * img_height +
+                                            b_idx * img_width * img_height +
+                                            p_plus_y * img_height +
+                                            p_plus_x;
+                                Mg[idx5d] += gradients[idx];
+                            }
+                            if(p_minus_y >= 0 && p_minus_y < img_height && p_minus_x >= 0 && p_minus_x < img_width){
+                                int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+                                            a_idx * size_b * img_width * img_height +
+                                            b_idx * img_width * img_height +
+                                            p_minus_y * img_height +
+                                            p_minus_x;
+                                Mg[idx5d] -= gradients[idx];
+                            }
+                        }
+                    }
+                }
             }
+        }
+            
+    }
+}
 
-            if (gradients[idx] >= n1 && gradients[idx] >= n2) {
-                nms_gradients[idx] = gradients[idx];
-            } else {
-                nms_gradients[idx] = 0;
+__global__ void checkMgExists(double *Mg){
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int size_a = sizeof(d_a_vals) / sizeof(int);
+    int size_b = sizeof(d_b_vals) / sizeof(int);
+    int idx = y * img_width + x;
+    if(y < img_height && y >= 0 && x < img_width && x >= 0){
+        double maxval = 0.0;
+        for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+            for(int a_idx = 0; a_idx < size_a; a_idx++){
+                for(int b_idx = 0; b_idx < size_b; b_idx++){
+                    int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+                                        a_idx * size_b * img_width * img_height +
+                                        b_idx * img_width * img_height +
+                                        y * img_height +
+                                        x;
+                    if(Mg[idx5d] > maxval) maxval = Mg[idx5d];
+                }
+            }
+        }
+        if(maxval != 0.0)
+            printf("(%d,%d) has response %f\n", y, x, maxval);
+    }
+}
+
+__global__void checkExists(double *S){
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int idx = y * img_width + x;
+    if(y < img_height && y >= 0 && x < img_width && x >= 0){
+        if(S[idx] != 0) 
+            printf("(%d, %d)")
+    }
+}
+
+//gaussian blur the 5d feature maps
+__global__ void generate_S1(double *M, double *O, double *S, double *S_nms,
+                double *S_flat, double *S_flat_nms){
+    double gauss[3][3] = {
+        {1.0/16.0, 2.0/16.0, 1.0/16.0},
+        {2.0/16.0, 4.0/16.0, 2.0/16.0},
+        {1.0/16.0, 2.0/16.0, 1.0/16.0}
+    };
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int size_a = sizeof(d_a_vals) / sizeof(int);
+    int size_b = sizeof(d_b_vals) / sizeof(int);
+    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+        for(int a_idx = 0; a_idx < size_a; a_idx++){
+            for(int b_idx = 0; b_idx < size_b; b_idx++){
+                if(y < (img_height - 1) && y > 0 && x < (img_width - 1) && x >= 1){
+                    for(int dy = 0; dy < 3; dy++){
+                        for(int dx = 0; dx < 3; dx++){
+                            int idx =   degr_idx * size_a * size_b * img_width * img_height +
+                                        a_idx * size_b * img_width * img_height +
+                                        b_idx * img_width * img_height +
+                                        y * img_height +
+                                        x;
+                            int idx2 =  degr_idx * size_a * size_b * img_width * img_height +
+                                        a_idx * size_b * img_width * img_height +
+                                        b_idx * img_width * img_height +
+                                        (dy + y - 1) * img_height +
+                                        (dx + x -1);
+                            S[idx] += M[idx2] * gauss[dy][dx];
+                        }
+                    }
+                }        
             }
         }
     }
 }
 
-__global__ void grayscaleKernel(Pixel* img, double* grayscaleImg, int width, int height) {
+//NMS the 5d feature maps 
+__global__ void generate_S2(double *M, double *O, double *S, double *S_nms,
+                double *S_flat, double *S_flat_nms){
+
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int size_a = sizeof(d_a_vals) / sizeof(int);
+    int size_b = sizeof(d_b_vals) / sizeof(int);
+    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+        for(int a_idx = 0; a_idx < size_a; a_idx++){
+            for(int b_idx = 0; b_idx < size_b; b_idx++){
+                if(y < (img_height - 1) && y > 0 && x < (img_width - 1) && x >= 1){
+                    double maxNeighbor = 0.0;
+                    for(int dy = 0; dy < 3; dy++){
+                        for(int dx = 0; dx < 3; dx++){        
+                            int idx2 =  degr_idx * size_a * size_b * img_width * img_height +
+                                        a_idx * size_b * img_width * img_height +
+                                        b_idx * img_width * img_height +
+                                        (dy + y - 1) * img_height +
+                                        (dx + x -1);
+                            if(dy != 1 || dx != 1) maxNeighbor = max(maxNeighbor, S[idx2]);
+                        }
+                    }
+                    int idx = degr_idx * size_a * size_b * img_width * img_height +
+                                a_idx * size_b * img_width * img_height +
+                                b_idx * img_width * img_height +
+                                y * img_height +
+                                x;
+                    if(S[idx] < maxNeighbor) S_nms[idx] = 0;
+                    else S_nms[idx] = S[idx];
+                }
+                        
+            }
+        }
+    }
+    double maxresponse = 0.0;
+    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+        for(int a_idx = 0; a_idx < size_a; a_idx++){
+            for(int b_idx = 0; b_idx < size_b; b_idx++){
+                int idx = degr_idx * size_a * size_b * img_width * img_height +
+                                a_idx * size_b * img_width * img_height +
+                                b_idx * img_width * img_height +
+                                y * img_height +
+                                x;
+                maxresponse = max(maxresponse, S[idx]);
+            }
+        }
+    }
+    S_flat_nms[y * img_width + x] = maxresponse;
+}
+
+__global__ void generate_S3(double *M, double *O, double *S, double *S_nms,
+                double *S_flat, double *S_flat_nms){
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int size_a = sizeof(d_a_vals) / sizeof(int);
+    int size_b = sizeof(d_b_vals) / sizeof(int);
+    double gauss[3][3] = {
+        {1.0/16.0, 2.0/16.0, 1.0/16.0},
+        {2.0/16.0, 4.0/16.0, 2.0/16.0},
+        {1.0/16.0, 2.0/16.0, 1.0/16.0}
+    };
+
+    for(int dy = 0; dy < 3; dy++){
+        for(int dx = 0; dx < 3; dx++){
+            S_flat[y * img_width + x] += S_flat_nms[(dy+y-1)*img_width + dx+x-1] * gauss[dy][dx];
+        }
+    }
+}
+
+__global__ void generate_S4(double *M, double *O, double *S, double *S_nms,
+                double *S_flat, double *S_flat_nms){
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int size_a = sizeof(d_a_vals) / sizeof(int);
+    int size_b = sizeof(d_b_vals) / sizeof(int);
+    double maxNeighbor = 0.0;
+    for(int dy = 0; dy < 3; dy++){
+        for(int dx = 0; dx < 3; dx++){
+            if(dy != 1 || dx != 1) maxNeighbor = max(maxNeighbor, S_flat[(dy+y-1)*img_width + dx+x-1]);
+        }
+    }
+    if(maxNeighbor > S_flat[y * img_width + x]) S_flat_nms[y * img_width + x] = 0;
+    else S_flat_nms[y * img_width + x] = S_flat[y * img_width + x];
+}
+
+__global__ void grayscaleKernel(int *color_image_d, double *grayscaleImg) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     // if(!x && !y)
@@ -245,11 +510,11 @@ __global__ void gaussConvolve1(double *M, double *postGauss, int *radii){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    // for(int i = 0; i < 3; i++){
-    //         for(int j = 0; j < 3; j++){
-    //             gauss[i][j] =  1/16 * gauss[i][j];
-    //     }
-    // }
+    double gauss[3][3] = {
+        {1.0/16.0, 2.0/16.0, 1.0/16.0},
+        {2.0/16.0, 4.0/16.0, 2.0/16.0},
+        {1.0/16.0, 2.0/16.0, 1.0/16.0}
+    };
 
     double t = 0;
     int best_r = 0;
@@ -310,268 +575,245 @@ __global__ void postGaussNMSKernel(double *postGauss, double *gaussNMS, int *rad
             radii[idx] = 0;
         }
     }
+    // __syncthreads();
 }
 
-__global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, double *gradY, double *gradients, double *gradientDir, Image *color, 
-                                            int* d_a_vals, int* d_b_vals, int width, int height){
-    // Mg [theta][a][b][y][x]
-    // Og [theta][a][b][y][x]
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int idx = y * width + height;
-    if (x > 0 && y > 0 && x < width - 1 && y < height - 1 && gradients[y*width + x] ) {
-        
-        //pii p = {y,x};
-        pii p;
-        p.first = y;
-        p.second = x;
-        double dy = (gradY[idx] / gradients[idx]);
-        double dx = (gradX[idx] / gradients[idx]);
-
-        int size_a = sizeof(d_a_vals) / sizeof(int);
-        int size_b = sizeof(d_b_vals) / sizeof(int);
-        // printf("(%d, %d) -> {%f, %f} |%f|\n", i, j, gradY[i][j], gradX[i][j], gradients[i][j]);
-        // printf("processing pixel %d, %d\n", i, j);
-        // for(int degr = 0; degr < 360; degr += angular_granularity){
-        for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++) {
-            int degr = degr_idx * angular_granularity;
-            double theta = degr * PI/180.0;
-            for(int a_idx = 1; a_idx < size_a; a_idx++){
-                for(int b_idx = 1; b_idx < size_b; b_idx++){
-                    int a = d_a_vals[a_idx];
-                    int b = d_b_vals[b_idx];
-                    double G[2][2] = {
-                        {a * cos(theta), -b * sin(theta)},
-                        {a * sin(theta),  b * cos(theta)},
-                    };
-                    // printf("generated G matrix = [ [%f, %f], [%f, %f]]\n", G[0][0], G[0][1], G[1][0], G[1][1]);
-                    double transform_matrix[2][2];
-                    M_mults(G, transform_matrix);
-                    // printf("(%f,%d,%d)generated T matrix = [ [%f, %f], [%f, %f]]\n", 
-                            // theta, a, b, transform_matrix[0][0], transform_matrix[0][1], transform_matrix[1][0], transform_matrix[1][1]);
-
-                    // pair<double, double> grad_t = {
-                    //     dy * transform_matrix[0][0] + dx * transform_matrix[0][1],
-                    //     dy * transform_matrix[1][0] + dx * transform_matrix[1][1]
-                    // };
-                    pdd grad_t;
-                    grad_t.first = dy * transform_matrix[0][0] + dx * transform_matrix[0][1];
-                    grad_t.second = dy * transform_matrix[1][0] + dx * transform_matrix[1][1];
-                    // printf("generated transformed gradients {%f, %f} from {%f, %f}\n", grad_t.first, grad_t.second, dy, dx);
-                    for(int n = 1; n < MAX_RADII; n++){
-                        pdd p_plus;
-                        p_plus.first = p.first + grad_t.first * n;
-                        p_plus.second = p.second + grad_t.second * n;
-
-                        pdd p_minus;
-                        p_minus.first = p.first - grad_t.first * n;
-                        p_minus.second = p.second - grad_t.second * n;
-                        // printf("for (theta,a,b) = (%d,%d,%d), have points +(%d,%d) -(%d,%d)\n",
-                        //         degr, a, b, p_plus.first, p_plus.second, p_minus.first, p_minus.second);
-                        if(p_plus.first >= 0 && p_plus.first < color->h && p_plus.second >= 0 && p_plus.first < color->w){
-                            int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (p_plus.first * width) + p_plus.second;
-                            // Og[idx] += 1;
-                            atomicAddDouble(&Og[idx], 1.0);
-                            // Mg[idx] += gradients[y * width + x];
-                            atomicAddDouble(&Mg[idx], gradients[y * width + x]);
-                        }
-                        if(p_minus.first >= 0 && p_minus.first < color->h && p_minus.second >= 0 && p_minus.first < color->w){
-                            int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (p_minus.first * width) + p_minus.second;
-                            // Og[idx] -= 1;
-                            atomicAddDouble(&Og[idx], -1.0);
-                            // Mg[idx] -= gradients[i][j];
-                            atomicAddDouble(&Mg[idx], -gradients[y * width + x]);
-                        }
-                    }
-                    
-                }
-            }
+//cpu
+unsigned long
+driverCuda(){
+    string basefile = "coins";
+    string filename = "images/" + basefile + ".txt";
+    ifstream fin(filename);
+    fin >> img_width_c >> img_height_c;
+    printf("Base file %s\n", basefile.c_str());
+    printf("Reading image path [%s] (%d x %d)\n", filename.c_str(), img_height_c, img_width_c);
+    // cudaMemcpy(&img_height, &img_height_c, sizeof(int), cudaMemcpyHostToDevice);
+    // cudaMemcpy(&img_width, &img_width_c, sizeof(int), cudaMemcpyHostToDevice);
+    int* color_img_cpu = (int*)calloc(img_width_c * img_height_c * 3, sizeof(int));
+    for(int i = 0; i < img_height_c; i++){
+        for(int j = 0; j < img_width_c; j++){
+            int a,b,c;
+            fin >> a >> b >> c;
+            int flat_idx = (i * img_width_c + j) * 3;
+            color_img_cpu[flat_idx] = a;
+            color_img_cpu[flat_idx + 1] = b;
+            color_img_cpu[flat_idx + 2] = c; 
         }
-
     }
 
+    unsigned long start = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    //determine kernel call params
+    dim3 blockDim(32,32, 1);
+    dim3 gridDim((img_width_c + blockDim.x - 1) / blockDim.x,
+                 (img_height_c + blockDim.y - 1) / blockDim.y,
+                 1);
+    // dim3 gridDim(1, 1, 1);
+
+
+    //initialzie data structures
+    double *grayscaleImage_d; int *color_img_d;
+    int nBytesToCopy = img_width_c*img_height_c*3*sizeof(int);
+    printf("transferring %d bytes\n", nBytesToCopy);
+    cudaMalloc(&color_img_d, img_width_c*img_height_c*3*sizeof(int));
+    cudaMemcpy(color_img_d, color_img_cpu, img_width_c*img_height_c*3*sizeof(int),  cudaMemcpyHostToDevice);
+    cudaMalloc(&grayscaleImage_d, img_width_c * img_height_c * sizeof(double));
+
+    double *gradients_d, *gradientDir_d, *gradX_d, *gradY_d, *nms_gradients_d;
+    cudaMalloc(&gradients_d, img_width_c * img_height_c * sizeof(double));
+    cudaMalloc(&gradientDir_d, img_width_c * img_height_c * sizeof(double));
+    cudaMalloc(&gradX_d, img_width_c * img_height_c * sizeof(double));
+    cudaMalloc(&gradY_d, img_width_c * img_height_c * sizeof(double));
+    cudaMalloc(&nms_gradients_d, img_width_c * img_height_c * sizeof(double));
+
+    double *O_d, *M_d;
+    cudaMalloc(&O_d, MAX_RADII * img_width_c * img_height_c * sizeof(double));
+    cudaMalloc(&M_d, MAX_RADII * img_width_c * img_height_c * sizeof(double));
+
+    double *postGauss_d, *gaussNMS_d; int *radii_d;
+    cudaMalloc(&postGauss_d, img_width_c * img_height_c * sizeof(double));
+    cudaMalloc(&gaussNMS_d, img_width_c * img_height_c * sizeof(double));
+    cudaMalloc(&radii_d,     img_width_c * img_height_c * sizeof(int));
+
+    double *Mg_d, *Og_d, *S_d, *S_nms_d, *S_flat_d, *S_nms_flat_d;
+    cudaMalloc(&Mg_d, img_width_c * img_height_c * (360/angular_granularity) * a_vals.size() * b_vals.size() * sizeof(double));
+    cudaMalloc(&Og_d, img_width_c * img_height_c * (360/angular_granularity) * a_vals.size() * b_vals.size() * sizeof(double));
+    cudaMalloc(&S_d, img_width_c * img_height_c * (360/angular_granularity) * a_vals.size() * b_vals.size() * sizeof(double));
+    cudaMalloc(&S_nms_d, img_width_c * img_height_c * (360/angular_granularity) * a_vals.size() * b_vals.size() * sizeof(double));
+    cudaMalloc(&S_flat_d, img_width_c * img_height_c * sizeof(double));
+    cudaMalloc(&S_nms_flat_d, img_width_c * img_height_c * sizeof(double));
+
+    //cpu mallocs
+    double *postGauss_c, *gaussNMS_c, *S_flat_c, *S_flat_nms_c;
+    int *radii_c;
+    postGauss_c = (double*) malloc(img_width_c * img_height_c * sizeof(double));
+    gaussNMS_c  = (double*) malloc(img_width_c * img_height_c * sizeof(double));
+    radii_c     = (int*) malloc(img_width_c * img_height_c * sizeof(int));
+    S_flat_c = (double*) malloc(img_width_c * img_height_c * sizeof(double));
+    S_flat_nms_c = (double*) malloc(img_width_c * img_height_c * sizeof(double));
+
+
+    //grayscale the image
+    printf("grayscale start\n");
+    grayscaleKernel<<<gridDim, blockDim>>>(color_img_d, grayscaleImage_d);
+    cudaThreadSynchronize();
+    printf("grayscale end\n");
+
+    if(LOG){
+        double *grayscale_c = (double*) malloc(img_height_c * img_width_c * sizeof(double));
+        cudaMemcpy(grayscale_c, grayscaleImage_d, img_width_c * img_height_c * sizeof(double), cudaMemcpyDeviceToHost);
+        ofstream gray_file("images_cuda/" + basefile + "_gray.txt");
+        for(int i = 0; i < img_height_c; i++){
+            for(int j = 0; j < img_width_c; j++){
+                gray_file << grayscale_c[i * img_width_c + j] << endl;
+            }
+        }
+        gray_file.close();
+    }
+
+    printf("gradient calculation start\n");
+    gradientKernel<<<gridDim, blockDim>>>(grayscaleImage_d, gradients_d, gradX_d, gradY_d, gradientDir_d);
+    cudaThreadSynchronize();
+    printf("gradient calculation end\n");
+
+    if(LOG){
+        double *gradients_c = (double*) malloc(img_height_c * img_width_c * sizeof(double));
+        cudaMemcpy(gradients_c, gradients_d, img_width_c * img_height_c * sizeof(double), cudaMemcpyDeviceToHost);
+        ofstream grad_file("images_cuda/" + basefile + "_gradients.txt");
+        for(int i = 0; i < img_height_c; i++){
+            for(int j = 0; j < img_width_c; j++){
+                grad_file << gradients_c[i * img_width_c + j] << endl;
+            }
+        }
+        grad_file.close();
+    }
+
+    printf("NMS start\n");
+    NMSKernel<<<gridDim,blockDim>>>(gradients_d, gradientDir_d, nms_gradients_d);
+    cudaThreadSynchronize();
+    printf("NMS end\n");
+
+    printf("radial symmetry calculation start\n");
+    radialSymmetryKernel<<<gridDim,blockDim>>>(gradX_d, gradY_d, gradients_d, O_d, M_d);
+    cudaThreadSynchronize();
+    printf("radial symmetry calculation end\n");
+
+    printf("best response calculation start\n");
+    gaussConvolve1<<<gridDim, blockDim>>>(M_d, postGauss_d, radii_d);
+    cudaThreadSynchronize();
+    printf("best response calculation end\n");
+
+    printf("blur start\n");
+    gaussConvolve2<<<gridDim, blockDim>>>(M_d, postGauss_d, radii_d);
+    cudaThreadSynchronize();
+    printf("blur end\n");
+
+    cudaMemcpy(postGauss_c, postGauss_d, img_width_c * img_height_c * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(radii_c, radii_d, img_width_c * img_height_c * sizeof(int), cudaMemcpyDeviceToHost);
+
+    printf("NMS on best-radii start\n");
+    postGaussNMSKernel<<<gridDim, blockDim>>>(postGauss_d, gaussNMS_d, radii_d);
+    cudaThreadSynchronize();
+    printf("NMS on best-radii end\n");
+
+    cudaMemcpy(gaussNMS_c, gaussNMS_d, img_width_c * img_height_c * sizeof(double), cudaMemcpyDeviceToHost);
+
+    /*
+    
+        ELLIPSES FROM HERE, CIRCLES BEFORE
+
+    */
+
+    printf("ellipse response map start\n");
+    // ellipseResponseMapKernel<<<gridDim,blockDim>>>(Mg_d, Og_d, gradX_d, gradY_d, nms_gradients_d, gradientDir_d);
+    ellipseResponseMapKernel<<<gridDim, blockDim>>>(Mg_d, Og_d, gradX_d, gradY_d, nms_gradients_d);
+    cudaThreadSynchronize();
+    printf("ellipse resposne map end\n");
+
+    // printf("checking maxes start\n");
+    // checkMgExists<<<gridDim, blockDim>>>(Mg_d);
+    // cudaThreadSynchronize();
+    // printf("checking maxes end\n");
+
+
+
+
+    printf("S1 start\n");
+    generate_S1<<<gridDim, blockDim>>>(Mg_d, Og_d, S_d, S_nms_d, S_flat_d, S_nms_flat_d);
+    cudaThreadSynchronize();
+    printf("S1 end\n");
+
+    // printf("checking maxes start\n");
+    // checkMgExists<<<gridDim, blockDim>>>(S_d);
+    // cudaThreadSynchronize();
+    // printf("checking maxes end\n");
+
+    printf("S2 start\n");
+    generate_S2<<<gridDim, blockDim>>>(Mg_d, Og_d, S_d, S_nms_d, S_flat_d, S_nms_flat_d);
+    cudaThreadSynchronize();
+    printf("S2 end\n");
+    printf("S3 start\n");
+    generate_S3<<<gridDim, blockDim>>>(Mg_d, Og_d, S_d, S_nms_d, S_flat_d, S_nms_flat_d);
+    cudaThreadSynchronize();
+    printf("S3 end\n");
+    printf("S4 start\n");
+    generate_S4<<<gridDim, blockDim>>>(Mg_d, Og_d, S_d, S_nms_d, S_flat_d, S_nms_flat_d);
+    cudaThreadSynchronize();
+    printf("S4 end\n");
+
+
+
+    
+
+
+    // cudaMemcpy(postGauss_c, postGauss_d, img_width_c * img_height_c * sizeof(double), cudaMemcpyDeviceToHost);
+    // cudaMemcpy(gaussNMS_c, gaussNMS_d, img_width_c * img_height_c * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(radii_c, radii_d, img_width_c * img_height_c * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(S_flat_c, S_flat_d, img_width_c * img_height_c * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(S_flat_nms_c, S_nms_flat_d, img_width_c * img_height_c * sizeof(double), cudaMemcpyDeviceToHost);
+
+    unsigned long end = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    if(LOG){
+        ofstream post_gauss_nms("images_cuda/" + basefile + "_gaussnms.txt");
+        for(int i = 0; i < img_height_c; i++){
+            for(int j = 0; j < img_width_c; j++){
+                post_gauss_nms << gaussNMS_c[i * img_width_c + j] << endl;
+            }
+        }
+        post_gauss_nms.close();
+
+        ofstream radii_file("images_cuda/" + basefile + "_radii.txt");
+        for(int i = 0; i < img_height_c; i++){
+            for(int j = 0; j < img_width_c; j++){
+                radii_file << radii_c[i * img_width_c + j] << endl;
+            }
+        }
+        radii_file.close();
+
+        ofstream blurred_file("images_cuda/" + basefile + "_genblurred.txt");
+        for(int i = 0; i < img_height_c; i++){
+            for(int j = 0; j < img_width_c; j++){
+                if(S_flat_c[i * img_width_c + j] != 0) printf("(%d,%d)\n", i, j);
+                blurred_file << S_flat_c[i * img_width_c + j] << endl;
+            }
+        }
+        blurred_file.close();
+
+        ofstream gen_nms_file("images_cuda/" + basefile + "_gennms.txt");
+        for(int i = 0; i < img_height_c; i++){
+            for(int j = 0; j < img_width_c; j++){
+                if(S_flat_nms_c[i * img_width_c + j] != 0) printf("(%d,%d)\n", i, j);
+                gen_nms_file << S_flat_nms_c[i * img_width_c + j] << endl;
+            }
+        }
+        gen_nms_file.close();
+    }
+    return end - start;
 }
 
-__global__ void generate_S(double *M, double *O, double *S, double *S_nms,
-                double *S_flat, double *S_flat_nms, Image* color,int* d_a_vals, int* d_b_vals, int width, int height){
 
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    double gauss[3][3] = {
-        {1.0/16.0, 2.0/16.0, 1.0/16.0},
-        {2.0/16.0, 4.0/16.0, 2.0/16.0},
-        {1.0/16.0, 2.0/16.0, 1.0/16.0}
-    };
-
-    int size_a = sizeof(d_a_vals) / sizeof(int);
-    int size_b = sizeof(d_b_vals) / sizeof(int);
-
-    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
-        int degr = degr_idx * angular_granularity;
-        for(int a_idx = 0; a_idx < size_a; a_idx++){
-            int a = d_a_vals[a_idx];
-            for(int b_idx = 0; b_idx < size_b; b_idx++){
-                int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (y * width) + x;
-                int b = d_b_vals[b_idx];
-                double o_hat = max(O[idx], Kn);
-
-                O[idx] = (abs(o_hat) / Kn) * M[idx] / Kn;
-            }
-        }
-    }
-
-    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
-        for(int a_idx = 0; a_idx < size_a; a_idx++){
-            for(int b_idx = 0; b_idx < size_b; b_idx++){
-                if( x > 0 && y > 0) {
-                    for(int dy = 0; dy < 3; dy++){
-                        for(int dx = 0; dx < 3; dx++){
-                            int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (y * width) + x;
-                            int idx2 = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + ((dy + y - 1) * width) + dx + x - 1;
-                            S[idx] += M[idx2] * gauss[dy][dx];
-                        }
-                    }
-                }
-                       
-            }
-        }
-    }
-
-    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
-        for(int a_idx = 0; a_idx < size_a; a_idx++){
-            for(int b_idx = 0; b_idx < size_b; b_idx++){
-                if( x > 0 && y > 0) {
-                    double maxNeighbor = 0.0;
-                    for(int dy = 0; dy < 3; dy++){
-                        for(int dx = 0; dx < 3; dx++){        
-                            int idx2 = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + ((dy + y - 1) * width) + dx + x - 1;
-                            if(dy != 1 || dx != 1) maxNeighbor = max(maxNeighbor, S[idx2]);
-                        }
-                    }
-                    int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (y * width) + x;
-                    if(S[idx] < maxNeighbor) S_nms[idx] = 0;
-                    else S_nms[idx] = S[idx];
-                }
-                        
-            }
-        }
-    }
-
-    //flatten 5d->2d
-    double maxresponse = 0.0;
-    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
-        for(int a_idx = 0; a_idx < size_a; a_idx++){
-            for(int b_idx = 0; b_idx < size_b; b_idx++){
-                int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (y * width) + x;
-                maxresponse = max(maxresponse, S[idx]);
-            }
-        }
-    }
-    S_flat_nms[y * width + x] = maxresponse;
-
-    //gassuain blur flat -> blur matrix
-
-    for(int dy = 0; dy < 3; dy++){
-        for(int dx = 0; dx < 3; dx++){
-            S_flat[y * width + x] += S_flat_nms[(dy+y-1)*width + dx+x-1] * gauss[dy][dx];
-        }
-    }
-
-    //nms blur -> flat
-    double maxNeighbor = 0.0;
-    for(int dy = 0; dy < 3; dy++){
-        for(int dx = 0; dx < 3; dx++){
-            if(dy != 1 || dx != 1) maxNeighbor = max(maxNeighbor, S_flat[(dy+y-1)*width + dx+x-1]);
-        }
-    }
-    if(maxNeighbor > S_flat[y * width + x]) S_flat_nms[y * width + x] = 0;
-    else S_flat_nms[y * width + x] = S_flat[y * width + x];
-
-}
-
-/*
-
-
-//gaussian convolve
-__global__ void gaussConvolve1Ellipse(double ***M, double **postGauss, int **radii, Image *color, int width, int height){
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    double gauss[3][3] = {
-        {1.0/16.0, 2.0/16.0, 1.0/16.0},
-        {2.0/16.0, 4.0/16.0, 2.0/16.0},
-        {1.0/16.0, 2.0/16.0, 1.0/16.0}
-    };
-
-    // for(int i = 0; i < 3; i++){
-    //         for(int j = 0; j < 3; j++){
-    //             gauss[i][j] =  1/16 * gauss[i][j];
-    //     }
-    // }
-
-    double t = 0;
-    int best_r = 0;
-    for(int r = 0; r < MAX_RADII; r++){
-        // t = max(M[r][i][j], t);
-        if(M[r*width*height + y*width + x] > t){
-            best_r = r;
-            t = M[r*width*height + y*width + x];
-        }
-    }
-    radii[y*width + x] = best_r;
-    M[0*width*height + y*width + x] = t;
-}
-
-
-__global__ void gaussConvolve2Ellipse(double *M, double *postGauss, int *radii, Image *color, int width, int height){
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    double gauss[3][3] = {
-        {1.0/16.0, 2.0/16.0, 1.0/16.0},
-        {2.0/16.0, 4.0/16.0, 2.0/16.0},
-        {1.0/16.0, 2.0/16.0, 1.0/16.0}
-    };
-
-    // printf("(%d, %d)", i, j);
-    double g = 0;
-    for(int dy = 0; dy < 3; dy++){
-        for(int dx = 0; dx < 3; dx++){
-            // printf("(%d, %d), %f || ", dy, dx, gauss[dy][dx]);
-            g += M[(y + dy) * width + (x + dx)] * gauss[dy][dx];
-            if(g != 0){
-                // printf("(%d,%d) %f, %f\n", i, j, M[0][dy+i-1][dx+j-1], gauss[dy][dx]);
-            }
-        }
-    }
-    // printf("\n");
-    // printf("(%d,%d)->%f\n", i,j, g);
-    postGauss[y * width + x] = (g > THRESH) ? g : 0;
-
-
-
-}
-
-*/
-
-int main() {
-    const int a_vals[] = {2, 4, 6, 8};
-    const int b_vals[] = {2, 4, 6, 8};
-    int size_a = sizeof(a_vals) / sizeof(a_vals[0]);
-    int size_b = sizeof(b_vals) / sizeof(b_vals[0]);
-
-
-    int *d_a_vals, *d_b_vals;
-
-    // Allocate memory on the device
-    cudaMalloc((void**)&d_a_vals, size_a * sizeof(int));
-    cudaMalloc((void**)&d_b_vals, size_b * sizeof(int));
-
-
-
-    // Copy data from host to device
-    cudaMemcpy(d_a_vals, a_vals, size_a * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_b_vals, b_vals, size_b * sizeof(int), cudaMemcpyHostToDevice);
-
+int main(){
+    unsigned long runtime = driverCuda();
+    printf("Runtime: %ld\n", runtime);
 }
