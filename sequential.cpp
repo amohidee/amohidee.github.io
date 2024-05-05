@@ -1,16 +1,37 @@
 #include <bits/stdc++.h>
 using namespace std;
 
+//pi
 #define PI 3.14159265358979323846
+//max a/b or radii for fst
 #define MAX_RADII 50
+//scaling factor from paper
 #define Kn 9.9
+//M response map threshold
 #define THRESH 1000
+//not iterating through a lot of angles lmao
+//in degrees
+#define angular_granularity 60
+
+#define LOG true
 
 typedef pair<int,int> pii;
+
+const vector<int> a_vals = {2, 4, 6, 8};
+const vector<int> b_vals = {2, 4, 6, 8};
 
 typedef struct Pixel {
     uint8_t r,g,b;
 } Pixel;
+
+const int M[2][2] = {
+    {0, 1}, {-1, 0}
+};
+
+const int M_inv[2][2] = {
+    {0, -1}, {1, 0}
+};
+
 
 typedef struct Image {
     int w, h;
@@ -24,6 +45,34 @@ typedef struct Image {
         }
     }
 } Image;
+
+typedef struct Params {
+    int theta, a, b;
+} Params;
+
+
+void matInv(double (&A)[2][2], double (&A_inv)[2][2]){
+    float det = 1 / (A[0][0] * A[1][1] - A[0][1] * A[1][0]);
+    A_inv[0][0] = A[1][1] * det;
+    A_inv[0][1] = -A[0][1] * det;
+    A_inv[1][0] = -A[1][0] * det;
+    A_inv[1][1] = A[0][0] * det;
+}
+
+void M_mults(double (&M)[2][2], double (&res)[2][2]){
+    double M_inv[2][2];
+    matInv(M, M_inv);
+    res[0][0] = M[0][0] * M_inv[1][1] - M[0][1] * M_inv[0][1];
+    res[0][1] = M[0][1] * M_inv[0][0] - M[0][0] * M_inv[1][0] ;
+    res[1][0] = M[1][0] * M_inv[1][1] - M[1][1] * M_inv[0][1];
+    res[1][1] = M[1][1] * M_inv[0][0] - M[1][0] * M_inv[1][0];
+}
+
+int clamp(int min, int v, int high){
+    if(v < min)return min;
+    if(v > high) return high;
+    return v;
+}
 
 void grayscale(Image* color, double** grayscaleImg){
     for(int i = 0; i < color->h; i++){
@@ -119,7 +168,7 @@ void radialSymmetry(double **gradX, double** gradY, double **gradients, Image *c
             pii p = {i,j};
             double dy =  (gradY[i][j] / gradients[i][j]);
             double dx =  (gradX[i][j] / gradients[i][j]);
-            printf("dy, dx: %f, %f, %f, %f\n", dy, dx, gradY[i][j], gradX[i][j] );
+            // printf("dy, dx: %f, %f, %f, %f\n", dy, dx, gradY[i][j], gradX[i][j] );
             for(int r = 1; r < MAX_RADII; r++){
                 pii p_plus =  {p.first + dy * r, p.second + dx * r};
                 pii p_minus = {p.first - dy * r, p.second - dx * r};
@@ -145,12 +194,6 @@ void gaussConvolve(double ***M, double **postGauss, int **radii, Image *color){
         {2.0/16.0, 4.0/16.0, 2.0/16.0},
         {1.0/16.0, 2.0/16.0, 1.0/16.0}
     };
-
-    // for(int i = 0; i < 3; i++){
-    //         for(int j = 0; j < 3; j++){
-    //             gauss[i][j] =  1/16 * gauss[i][j];
-    //     }
-    // }
 
     for(int i = 0; i < color->h; i++){
         for(int j = 0; j < color->w; j++){
@@ -211,36 +254,61 @@ void postGaussNMS(double **postGauss, double **gaussNMS, int **radii,Image* colo
     }
 }
 
-// void elipseResponseMap(double *****Mg, double *****Og, double **gradX, double **gradY, double **gradientDir, Image *color)
+void ellipseResponseMap(double *****Mg, double *****Og, double **gradX, double **gradY, double **gradients, double **gradientDir, Image *color){
+    for(int i = 0; i < color->h; i++){
+        for(int j = 0; j < color->w; j++){
+            if(gradients[i][j] == 0){
+                continue;
+            }
+            pii p = {i,j};
+            double dy = (gradY[i][j] / gradients[i][j]);
+            double dx = (gradX[i][j] / gradients[i][j]);
+            // printf("(%d, %d) -> {%f, %f} |%f|\n", i, j, gradY[i][j], gradX[i][j], gradients[i][j]);
+            // printf("processing pixel %d, %d\n", i, j);
+            // for(int degr = 0; degr < 360; degr += angular_granularity){
+            for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++) {
+                int degr = degr_idx * angular_granularity;
+                double theta = degr * PI/180.0;
+                for(int a_idx = 1; a_idx < a_vals.size(); a_idx++){
+                    for(int b_idx = 1; b_idx < b_vals.size(); b_idx++){
+                        int a = a_vals[a_idx];
+                        int b = b_vals[b_idx];
+                        double G[2][2] = {
+                            {a * cos(theta), -b * sin(theta)},
+                            {a * sin(theta),  b * cos(theta)},
+                        };
+                        // printf("generated G matrix = [ [%f, %f], [%f, %f]]\n", G[0][0], G[0][1], G[1][0], G[1][1]);
+                        double transform_matrix[2][2];
+                        M_mults(G, transform_matrix);
+                        // printf("(%f,%d,%d)generated T matrix = [ [%f, %f], [%f, %f]]\n", 
+                                // theta, a, b, transform_matrix[0][0], transform_matrix[0][1], transform_matrix[1][0], transform_matrix[1][1]);
 
-//elipses
-// void responseMap(double *****Mg, double *****Og, double **gradX, double **gradY, double **gradientDir){
-//     for(int i = 0; i < color->h; i++){
-//         for(int j = 0; j < color->w ; j++){
-//             pii p = {i,j};
-//             int dy = (int) (gradY[i][j] / gradients[i][j]);
-//             int dx = (int) (gradX[i][j] / gradients[i][j]);
-//             for(int r = 1; r < MAX_RADII; r++){
-//                 for(int a = 0; a < n; a++){
-//                     for(int b = 0; b < n; b++){
-
-//                     }
-//                 }
-//                 // pii p_plus =  {p.first + dy * r, p.second + dx * r};
-//                 // pii p_minus = {p.first - dy * r, p.second - dx * r};
-
-//                 // if(p_plus.first >= 0 && p_plus.first < color->h && p_plus.second >= 0 && p_plus.first < color->w){
-//                 //     O[r][p_plus.first][p_plus.second] += 1;
-//                 //     M[r][p_plus.first][p_plus.second] += gradients[i][j];
-//                 // }
-//                 // if(p_minus.first >= 0 && p_minus.first < color->h && p_minus.second >= 0 && p_minus.first < color->w){
-//                 //     O[r][p_minus.first][p_minus.second] -= 1;
-//                 //     M[r][p_minus.first][p_minus.second] -= gradients[i][j];
-//                 // }
-//             }
-//         }
-//     }
-// }
+                        pair<double, double> grad_t = {
+                            dy * transform_matrix[0][0] + dx * transform_matrix[0][1],
+                            dy * transform_matrix[1][0] + dx * transform_matrix[1][1]
+                        };
+                        // printf("generated transformed gradients {%f, %f} from {%f, %f}\n", grad_t.first, grad_t.second, dy, dx);
+                        for(int n = 1; n < MAX_RADII; n++){
+                            pii p_plus =  {p.first + grad_t.first * n, p.second + grad_t.second * n};
+                            pii p_minus = {p.first - grad_t.first * n, p.second - grad_t.second * n};
+                            // printf("for (theta,a,b) = (%d,%d,%d), have points +(%d,%d) -(%d,%d)\n",
+                            //         degr, a, b, p_plus.first, p_plus.second, p_minus.first, p_minus.second);
+                            if(p_plus.first >= 0 && p_plus.first < color->h && p_plus.second >= 0 && p_plus.first < color->w){
+                                Og[degr_idx][a_idx][b_idx][p_plus.first][p_plus.second] += 1;
+                                Mg[degr_idx][a_idx][b_idx][p_plus.first][p_plus.second] += gradients[i][j];
+                            }
+                            if(p_minus.first >= 0 && p_minus.first < color->h && p_minus.second >= 0 && p_minus.first < color->w){
+                                Og[degr_idx][a_idx][b_idx][p_minus.first][p_minus.second] -= 1;
+                                Mg[degr_idx][a_idx][b_idx][p_minus.first][p_minus.second] -= gradients[i][j];
+                            }
+                        }
+                        
+                    }
+                }
+            }
+        }
+    }
+}
 
 typedef struct {
     float x;
@@ -331,7 +399,7 @@ Tuple* getCollidingCircles(Circle* circles) {
 // Circle checkOnTop
 
 int main(){
-    string basefile = "coins";
+    string basefile = "cells";
     string filename = "images/" + basefile + ".txt";
     std::ifstream fin(filename);
     int h, w;
@@ -380,59 +448,70 @@ int main(){
 
     grayscale(color, grayscaleImage);
     printf("grayscaled\n");
-    ofstream grayfile("images/" + basefile + "_gray.txt");
-     for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
-            grayfile << grayscaleImage[i][j] << endl;
+    if(LOG){
+         ofstream grayfile("images/" + basefile + "_gray.txt");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                grayfile << grayscaleImage[i][j] << endl;
+            }
         }
+        grayfile.close();
     }
-    grayfile.close();
+   
     // printf("%d, %d, %d, \n %f, %f, %f\n", 
     //         color->img[0][0].r, color->img[0][0].g, color->img[0][0].b,
     //        grayscaleImage[h-1][0], grayscaleImage[h-1][0], grayscaleImage[h-1][0]);
-
+    printf("starting gradient calc\n");
     gradient(grayscaleImage, gradients, gradientDir, color, gradX, gradY);
-
-    ofstream gradientfile("images/" + basefile + "_grads.txt");
-    printf("writing grads\n");
-    for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
-            gradientfile << gradients[i][j] << endl;
+    printf("finished calculating gradients\n");
+    if(LOG){
+        ofstream gradientfile("images/" + basefile + "_grads.txt");
+        printf("writing grads\n");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                gradientfile << gradients[i][j] << endl;
+            }
         }
-    }
-    gradientfile.close();
+        gradientfile.close();
 
-    ofstream xgradfile("images/" + basefile + "_xgr.txt");
-    ofstream ygradfile("images/" + basefile + "_ygr.txt");
-    printf("writing grads\n");
-    for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
-            xgradfile << gradX[i][j] << endl;
-            ygradfile << gradY[i][j] << endl;
+        ofstream xgradfile("images/" + basefile + "_xgr.txt");
+        ofstream ygradfile("images/" + basefile + "_ygr.txt");
+        printf("writing grads\n");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                xgradfile << gradX[i][j] << endl;
+                ygradfile << gradY[i][j] << endl;
+            }
         }
-    }
-    xgradfile.close();
-    ygradfile.close();
+        xgradfile.close();
+        ygradfile.close();
 
-    ofstream grad_dir_file("images/" + basefile + "_gradsdir.txt");
-    printf("writing grads\n");
-    for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
-            grad_dir_file << gradientDir[i][j] << endl;
+
+        ofstream grad_dir_file("images/" + basefile + "_gradsdir.txt");
+        printf("writing grads\n");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                grad_dir_file << gradientDir[i][j] << endl;
+            }
         }
+        grad_dir_file.close();
     }
-    grad_dir_file.close();
-
+        
+    printf("starting calculating NMS\n");
     NMS(gradients, gradientDir, nms_grads, color);
-    ofstream nms_file("images/" + basefile + "_nmsgrads.txt");
-    printf("writing grads\n");
-    for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
-            nms_file << nms_grads[i][j] << endl;
+    printf("finished calculating NMS\n");
+    if(LOG){
+        ofstream nms_file("images/" + basefile + "_nmsgrads.txt");
+        printf("writing grads\n");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                nms_file << nms_grads[i][j] << endl;
+            }
         }
+        nms_file.close();
     }
-    nms_file.close();
-
+    
+    printf("allocating O/M\n");
     double ***O, ***M;
     O = (double***)calloc(MAX_RADII, sizeof(double**));
     M = (double***)calloc(MAX_RADII, sizeof(double**));
@@ -444,58 +523,128 @@ int main(){
             M[r][i] = (double*)calloc(color->w, sizeof(double));
         }
     }
+    printf("finished allocating O/M\n");
 
-    radialSymmetry(gradX, gradY, nms_grads, color, O, M);
-    ofstream rad_sym_file("images/" + basefile + "_radsym.txt");
-    printf("writing grads\n");
-    for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
-            double tmp_write = 0.0;
-            for(int r = 0; r < MAX_RADII; r++){
-                tmp_write = max(M[r][i][j], tmp_write);
-                // if(tmp_write) printf("TMP: %f\n", tmp_write);
+    printf("allocating Og/Mg\n");
+
+    bool print_alloc = false;
+
+    double *****Mg = (double*****) calloc(360/angular_granularity, sizeof(double****));
+    double *****Og = (double*****) calloc(360/angular_granularity, sizeof(double****));
+    for(int i = 0; i < 360/angular_granularity; i++){
+        Mg[i] = (double****) calloc(a_vals.size(), sizeof(double***));
+        Og[i] = (double****) calloc(a_vals.size(), sizeof(double***));
+        for(int a = 0; a < a_vals.size(); a++){
+            Mg[i][a] = (double***) calloc(b_vals.size(), sizeof(double**));
+            Og[i][a] = (double***) calloc(b_vals.size(), sizeof(double**));
+            for(int b = 0; b < b_vals.size(); b++){
+                Mg[i][a][b] = (double**) calloc(color->h, sizeof(double*));
+                Og[i][a][b] = (double**) calloc(color->h, sizeof(double*));
+                for(int y = 0; y < color->h; y++){
+                    Mg[i][a][b][y] = (double*) calloc(color->w, sizeof(double));
+                    Og[i][a][b][y] = (double*) calloc(color->w, sizeof(double));
+                    if(print_alloc)printf("allocated (angle,a, b, y) value (%d, %d, %d, %d)\n", i, a, b, y);
+                }
             }
-            rad_sym_file << tmp_write << endl;
         }
     }
-    rad_sym_file.close();
+
+    printf("finished allocating Og/Mg\n");
+    printf("starting ellipse\n");
+    ellipseResponseMap(Mg, Og, gradX, gradY, nms_grads, gradientDir, color);
+    printf("finished ellipse responses\n");
+    if(LOG){
+        ofstream gen_rad_sym_file("images/" + basefile + "_genradsym.txt");
+        printf("writing gfrst results");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                double tmp_write = 0.0;
+                Params opt_param;
+                opt_param.a = 0;
+                opt_param.b = 0;
+                opt_param.theta = 0;
+                for(int angle = 0; angle < 360/angular_granularity; angle++){
+                    int real_angle = angle * angular_granularity;
+                    for(int a = 0; a < a_vals.size(); a++){
+                        for(int b = 0; b < b_vals.size(); b++){
+                            // printf("(%d, %d) - (%d, %d, %d)\n", i ,j, angle, a, b);
+                            if(Mg[angle][a][b][i][j] > tmp_write){
+                                opt_param.a = a_vals[a]; opt_param.b = b_vals[b]; opt_param.theta = real_angle;
+                                tmp_write = Mg[angle][a][b][i][j];
+                            }
+                            // tmp_write = max(Mg[angle][a][b][i][j], tmp_write);
+                        }
+                    }
+                }
+                gen_rad_sym_file << tmp_write << "," 
+                                 << opt_param.a << ","
+                                 << opt_param.b << ","
+                                 << opt_param.theta << endl;
+            }
+        }
+        gen_rad_sym_file.close();
+    }
+    printf("starting circular symm\n");
+    radialSymmetry(gradX, gradY, nms_grads, color, O, M);
+    printf("finished circular symm\n");
+    if(LOG){
+        ofstream rad_sym_file("images/" + basefile + "_radsym.txt");
+        printf("writing grads\n");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                double tmp_write = 0.0;
+                for(int r = 0; r < MAX_RADII; r++){
+                    tmp_write = max(M[r][i][j], tmp_write);
+                    // if(tmp_write) printf("TMP: %f\n", tmp_write);
+                }
+                rad_sym_file << tmp_write << endl;
+            }
+        }
+        rad_sym_file.close();
+    }
+   
 
     double **postGauss;
     postGauss = (double**)calloc(color->h, sizeof(double*));
     for(int i = 0; i < color->h; i++) postGauss[i] = (double*) calloc(color->w, sizeof(double));
-
+    printf("starting guassian blur\n");
     gaussConvolve(M, postGauss, best_radii, color);
-
-    ofstream gauss_file("images/" + basefile + "_gauss.txt");
-    printf("writing grads\n");
-    for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
-            gauss_file << postGauss[i][j] << endl;
+    printf("finished guassian blur\n");
+    if(LOG){
+        ofstream gauss_file("images/" + basefile + "_gauss.txt");
+        printf("writing grads\n");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                gauss_file << postGauss[i][j] << endl;
+            }
         }
+        gauss_file.close();
     }
-    gauss_file.close();
-
     gaussNms = (double**)calloc(color->h, sizeof(double*));
     for(int i = 0; i < color->h; i++) gaussNms[i] = (double*) calloc(color->w, sizeof(double));
 
     
-
+    printf("starting guassin blur nms\n");
     postGaussNMS(postGauss, gaussNms, best_radii, color);
-    ofstream post_gauss_nms("images/" + basefile + "_gaussnms.txt");
-    for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
-            post_gauss_nms << gaussNms[i][j] << endl;
+    printf("finished guassin blur nms\n");
+    if(LOG){
+        ofstream post_gauss_nms("images/" + basefile + "_gaussnms.txt");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                post_gauss_nms << gaussNms[i][j] << endl;
+            }
         }
-    }
-    post_gauss_nms.close();
+        post_gauss_nms.close();
 
-    ofstream radii_file("images/" + basefile + "_radii.txt");
-    for(int i = 0; i < color->h; i++){
-        for(int j = 0; j < color->w; j++){
-            radii_file << best_radii[i][j] << endl;
+        ofstream radii_file("images/" + basefile + "_radii.txt");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                radii_file << best_radii[i][j] << endl;
+            }
         }
+        radii_file.close();
     }
-    radii_file.close();
+    
 
 
     unsigned long end = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();

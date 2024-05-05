@@ -20,11 +20,11 @@ def image_to_rgb_matrix(image_path):
         return rgb_matrix, width, height
 
 if __name__ == '__main__':
-    fname = 'coin_1'
+    fname = 'cells'
     image_path = f'images/{fname}.jpg' 
     out_path = f'images/{fname}.txt'
     matrix, w, h = image_to_rgb_matrix(image_path)
-    print(matrix)
+    # print(matrix)
     with open(out_path, "w") as f:
         f.write(f"{w} {h}\n")
         for row in matrix:
