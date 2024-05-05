@@ -7,7 +7,19 @@ using namespace std;
 #define THRESH 1000
 #define angular_granularity 60
 
-typedef pair<int,int> pii;
+//typedef pair<int,int> pii;
+
+typedef struct pii {
+    int first;
+    int second;
+} pii;
+
+typedef struct pdd {
+    double first;
+    double second;
+} pdd;
+
+
 
 typedef struct Pixel {
     uint8_t r,g,b;
@@ -26,8 +38,75 @@ typedef struct Image {
     }
 } Image;
 
-typedef pair<int,int> pii;
 
+__device__ void matInv(double (&A)[2][2], double (&A_inv)[2][2]){
+    float det = 1 / (A[0][0] * A[1][1] - A[0][1] * A[1][0]);
+    A_inv[0][0] = A[1][1] * det;
+    A_inv[0][1] = -A[0][1] * det;
+    A_inv[1][0] = -A[1][0] * det;
+    A_inv[1][1] = A[0][0] * det;
+}
+
+__device__ void M_mults(double (&M)[2][2], double (&res)[2][2]){
+    double M_inv[2][2];
+    matInv(M, M_inv);
+    res[0][0] = M[0][0] * M_inv[1][1] - M[0][1] * M_inv[0][1];
+    res[0][1] = M[0][1] * M_inv[0][0] - M[0][0] * M_inv[1][0] ;
+    res[1][0] = M[1][0] * M_inv[1][1] - M[1][1] * M_inv[0][1];
+    res[1][1] = M[1][1] * M_inv[0][0] - M[1][0] * M_inv[1][0];
+}
+
+
+
+__device__ double atomicAddDouble(double* address, double val)
+{
+    unsigned long long int* address_as_ull =
+                              (unsigned long long int*)address;
+    unsigned long long int old = *address_as_ull, assumed;
+
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        __double_as_longlong(val +
+                               __longlong_as_double(assumed)));
+
+    // Note: uses integer comparison to avoid hang in case of NaN (since NaN != NaN)
+    } while (assumed != old);
+
+    return __longlong_as_double(old);
+}
+
+__global__ void NMSKernel(double *gradients, double *gradientDir, double *nms_gradients, int width, int height) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x > 0 && y > 0 && x < width - 1 && y < height - 1) {
+        int idx = y * width + x;
+        double n1, n2;
+        if (gradients[idx] != 0) {
+            double dir = gradientDir[idx];
+            if (dir > PI / 4 || dir < -PI / 4) {
+                n1 = gradients[(y - 1) * width + x];
+                n2 = gradients[(y + 1) * width + x];
+            } else if (dir > 0) {
+                n1 = gradients[(y - 1) * width + (x + 1)];
+                n2 = gradients[(y + 1) * width + (x - 1)];
+            } else if (dir > -PI / 4) {
+                n1 = gradients[(y + 1) * width + (x + 1)];
+                n2 = gradients[(y - 1) * width + (x - 1)];
+            } else {
+                n1 = 0;
+                n2 = 0;
+            }
+
+            if (gradients[idx] >= n1 && gradients[idx] >= n2) {
+                nms_gradients[idx] = gradients[idx];
+            } else {
+                nms_gradients[idx] = 0;
+            }
+        }
+    }
+}
 
 __global__ void grayscaleKernel(Pixel* img, double* grayscaleImg, int width, int height) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -62,42 +141,12 @@ __global__ void gradientKernel(double* grayscaleImg, double* gradients, double* 
         gradX[y * width + x] = xg;
         gradY[y * width + x] = yg;
         double angle = atan2(yg, xg);
-        if(isnan(gradientDir[y * width + x])) gradientDir[y * width + x] = PI / 2 * ((yg > 0) - (yg < 0));
-    }
-}
-
-
-__global__ void NMSKernel(double *gradients, double *gradientDir, double *nms_gradients, int width, int height, double PI) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (x > 0 && y > 0 && x < width - 1 && y < height - 1) {
-        int idx = y * width + x;
-        double n1, n2;
-        if (gradients[idx] != 0) {
-            double dir = gradientDir[idx];
-            if (dir > PI / 4 || dir < -PI / 4) {
-                n1 = gradients[(y - 1) * width + x];
-                n2 = gradients[(y + 1) * width + x];
-            } else if (dir > 0) {
-                n1 = gradients[(y - 1) * width + (x + 1)];
-                n2 = gradients[(y + 1) * width + (x - 1)];
-            } else if (dir > -PI / 4) {
-                n1 = gradients[(y + 1) * width + (x + 1)];
-                n2 = gradients[(y - 1) * width + (x - 1)];
-            } else {
-                n1 = 0;
-                n2 = 0;
-            }
-
-            if (gradients[idx] >= n1 && gradients[idx] >= n2) {
-                nms_gradients[idx] = gradients[idx];
-            } else {
-                nms_gradients[idx] = 0;
-            }
+        if(isnan(gradientDir[y * width + x])) {
+            gradientDir[y * width + x] = PI / 2 * ((yg > 0) - (yg < 0));
         }
     }
 }
+
 
 __global__ void radialSymmetryKernel(double *gradX, double *gradY, double *gradients, double *O, double *M, int width, int height, int max_radii) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -116,12 +165,12 @@ __global__ void radialSymmetryKernel(double *gradX, double *gradY, double *gradi
 
             // jsut using atomic add but we can change it to the blocking method
             if (p_plus_y >= 0 && p_plus_y < height && p_plus_x >= 0 && p_plus_x < width) {
-                atomicAdd(&O[r * height * width + p_plus_y * width + p_plus_x], 1);
-                atomicAdd(&M[r * height * width + p_plus_y * width + p_plus_x], gradients[y * width + x]);
+                atomicAddDouble(&O[r * height * width + p_plus_y * width + p_plus_x], 1.0);
+                atomicAddDouble(&M[r * height * width + p_plus_y * width + p_plus_x], gradients[y * width + x]);
             }
             if (p_minus_y >= 0 && p_minus_y < height && p_minus_x >= 0 && p_minus_x < width) {
-                atomicAdd(&O[r * height * width + p_minus_y * width + p_minus_x], -1);
-                atomicAdd(&M[r * height * width + p_minus_y * width + p_minus_x], -gradients[y * width + x]);
+                atomicAddDouble(&O[r * height * width + p_minus_y * width + p_minus_x], -1.0);
+                atomicAddDouble(&M[r * height * width + p_minus_y * width + p_minus_x], -gradients[y * width + x]);
             }
         }
     }
@@ -132,12 +181,6 @@ __global__ void radialSymmetryKernel(double *gradX, double *gradY, double *gradi
 __global__ void gaussConvolve1(double *M, double *postGauss, int *radii, Image *color, int width, int height){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    double gauss[3][3] = {
-        {1.0/16.0, 2.0/16.0, 1.0/16.0},
-        {2.0/16.0, 4.0/16.0, 2.0/16.0},
-        {1.0/16.0, 2.0/16.0, 1.0/16.0}
-    };
 
     // for(int i = 0; i < 3; i++){
     //         for(int j = 0; j < 3; j++){
@@ -217,7 +260,7 @@ __global__ void postGaussNMSKernel(double *postGauss, double *gaussNMS, int *rad
     }
 }
 
-__global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, double *gradY, double *gradients, double *gradientDir, Image *color){
+__global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, double *gradY, double *gradients, double *gradientDir, Image *color, int* d_a_vals, int* d_b_vals, int width, int height){
     // Mg [theta][a][b][y][x]
     // Og [theta][a][b][y][x]
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -225,19 +268,25 @@ __global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, 
     int idx = y * width + height;
     if (x > 0 && y > 0 && x < width - 1 && y < height - 1 && gradients[y*width + x] ) {
         
-        pii p = {y,x};
+        //pii p = {y,x};
+        pii p;
+        p.first = y;
+        p.second = x;
         double dy = (gradY[idx] / gradients[idx]);
         double dx = (gradX[idx] / gradients[idx]);
+
+        int size_a = sizeof(d_a_vals) / sizeof(int);
+        int size_b = sizeof(d_b_vals) / sizeof(int);
         // printf("(%d, %d) -> {%f, %f} |%f|\n", i, j, gradY[i][j], gradX[i][j], gradients[i][j]);
         // printf("processing pixel %d, %d\n", i, j);
         // for(int degr = 0; degr < 360; degr += angular_granularity){
         for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++) {
             int degr = degr_idx * angular_granularity;
             double theta = degr * PI/180.0;
-            for(int a_idx = 1; a_idx < a_vals.size(); a_idx++){
-                for(int b_idx = 1; b_idx < b_vals.size(); b_idx++){
-                    int a = a_vals[a_idx];
-                    int b = b_vals[b_idx];
+            for(int a_idx = 1; a_idx < size_a; a_idx++){
+                for(int b_idx = 1; b_idx < size_b; b_idx++){
+                    int a = d_a_vals[a_idx];
+                    int b = d_b_vals[b_idx];
                     double G[2][2] = {
                         {a * cos(theta), -b * sin(theta)},
                         {a * sin(theta),  b * cos(theta)},
@@ -248,29 +297,37 @@ __global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, 
                     // printf("(%f,%d,%d)generated T matrix = [ [%f, %f], [%f, %f]]\n", 
                             // theta, a, b, transform_matrix[0][0], transform_matrix[0][1], transform_matrix[1][0], transform_matrix[1][1]);
 
-                    pair<double, double> grad_t = {
-                        dy * transform_matrix[0][0] + dx * transform_matrix[0][1],
-                        dy * transform_matrix[1][0] + dx * transform_matrix[1][1]
-                    };
+                    // pair<double, double> grad_t = {
+                    //     dy * transform_matrix[0][0] + dx * transform_matrix[0][1],
+                    //     dy * transform_matrix[1][0] + dx * transform_matrix[1][1]
+                    // };
+                    pdd grad_t;
+                    grad_t.first = dy * transform_matrix[0][0] + dx * transform_matrix[0][1];
+                    grad_t.second = dy * transform_matrix[1][0] + dx * transform_matrix[1][1];
                     // printf("generated transformed gradients {%f, %f} from {%f, %f}\n", grad_t.first, grad_t.second, dy, dx);
                     for(int n = 1; n < MAX_RADII; n++){
-                        pii p_plus =  {p.first + grad_t.first * n, p.second + grad_t.second * n};
-                        pii p_minus = {p.first - grad_t.first * n, p.second - grad_t.second * n};
+                        pdd p_plus;
+                        p_plus.first = p.first + grad_t.first * n;
+                        p_plus.second = p.second + grad_t.second * n;
+
+                        pdd p_minus;
+                        p_minus.first = p.first - grad_t.first * n;
+                        p_minus.second = p.second - grad_t.second * n;
                         // printf("for (theta,a,b) = (%d,%d,%d), have points +(%d,%d) -(%d,%d)\n",
                         //         degr, a, b, p_plus.first, p_plus.second, p_minus.first, p_minus.second);
                         if(p_plus.first >= 0 && p_plus.first < color->h && p_plus.second >= 0 && p_plus.first < color->w){
                             int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (p_plus.first * width) + p_plus.second;
                             // Og[idx] += 1;
-                            atomicAdd(&Og[idx], 1);
+                            atomicAddDouble(&Og[idx], 1.0);
                             // Mg[idx] += gradients[y * width + x];
-                            atomicAdd(&Mg[idx], gradients[y * width + x]);
+                            atomicAddDouble(&Mg[idx], gradients[y * width + x]);
                         }
                         if(p_minus.first >= 0 && p_minus.first < color->h && p_minus.second >= 0 && p_minus.first < color->w){
                             int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (p_minus.first * width) + p_minus.second;
                             // Og[idx] -= 1;
-                            atomicAdd(&Og[idx], -1);
+                            atomicAddDouble(&Og[idx], -1.0);
                             // Mg[idx] -= gradients[i][j];
-                            atomicAdd(&Mg[idx], -gradients[y * width + x]);
+                            atomicAddDouble(&Mg[idx], -gradients[y * width + x]);
                         }
                     }
                     
@@ -281,6 +338,8 @@ __global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, 
     }
 
 }
+
+/*
 
 
 //gaussian convolve
@@ -314,7 +373,7 @@ __global__ void gaussConvolve1Ellipse(double ***M, double **postGauss, int **rad
 }
 
 
-__global__ void gaussConvolve2Ellipse(double ***M, double **postGauss, int **radii, Image *color, int width, int height){
+__global__ void gaussConvolve2Ellipse(double *M, double *postGauss, int *radii, Image *color, int width, int height){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -340,5 +399,28 @@ __global__ void gaussConvolve2Ellipse(double ***M, double **postGauss, int **rad
     postGauss[y * width + x] = (g > THRESH) ? g : 0;
 
 
+
+}
+
+*/
+
+int main() {
+    const int a_vals[] = {2, 4, 6, 8};
+    const int b_vals[] = {2, 4, 6, 8};
+    int size_a = sizeof(a_vals) / sizeof(a_vals[0]);
+    int size_b = sizeof(b_vals) / sizeof(b_vals[0]);
+
+
+    int *d_a_vals, *d_b_vals;
+
+    // Allocate memory on the device
+    cudaMalloc((void**)&d_a_vals, size_a * sizeof(int));
+    cudaMalloc((void**)&d_b_vals, size_b * sizeof(int));
+
+
+
+    // Copy data from host to device
+    cudaMemcpy(d_a_vals, a_vals, size_a * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b_vals, b_vals, size_b * sizeof(int), cudaMemcpyHostToDevice);
 
 }
