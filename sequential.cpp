@@ -7,6 +7,7 @@ using namespace std;
 #define MAX_RADII 50
 //scaling factor from paper
 #define Kn 9.9
+#define alpha 1.0
 //M response map threshold
 #define THRESH 1000
 //not iterating through a lot of angles lmao
@@ -287,6 +288,11 @@ void ellipseResponseMap(double *****Mg, double *****Og, double **gradX, double *
                             dy * transform_matrix[0][0] + dx * transform_matrix[0][1],
                             dy * transform_matrix[1][0] + dx * transform_matrix[1][1]
                         };
+
+                        double grad_mag = sqrt(grad_t.first * grad_t.first + grad_t.second * grad_t.second);
+                        grad_t.first /= grad_mag;
+                        grad_t.second /= grad_mag;
+
                         // printf("generated transformed gradients {%f, %f} from {%f, %f}\n", grad_t.first, grad_t.second, dy, dx);
                         for(int n = 1; n < MAX_RADII; n++){
                             pii p_plus =  {p.first + grad_t.first * n, p.second + grad_t.second * n};
@@ -306,6 +312,107 @@ void ellipseResponseMap(double *****Mg, double *****Og, double **gradX, double *
                     }
                 }
             }
+        }
+    }
+}
+
+void generate_S(double *****M, double *****O, double *****S, double *****S_nms,
+                double **S_flat, double **S_flat_nms, Image* color){
+
+    double gauss[3][3] = {
+        {1.0/16.0, 2.0/16.0, 1.0/16.0},
+        {2.0/16.0, 4.0/16.0, 2.0/16.0},
+        {1.0/16.0, 2.0/16.0, 1.0/16.0}
+    };
+
+    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+        int degr = degr_idx * angular_granularity;
+        for(int a_idx = 0; a_idx < a_vals.size(); a_idx++){
+            int a = a_vals[a_idx];
+            for(int b_idx = 0; b_idx < b_vals.size(); b_idx++){
+                int b = b_vals[b_idx];
+                for(int i = 0; i < color->h; i++){
+                    for(int j = 0; j < color->w; j++){
+                        double o_hat = max(O[degr_idx][a_idx][b_idx][i][j], Kn);
+
+                        O[degr_idx][a_idx][b_idx][i][j] = (abs(o_hat) / Kn) 
+                                                          * M[degr_idx][a_idx][b_idx][i][j] / Kn;
+                    }
+                }
+            }
+        }
+    }
+
+    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+        for(int a_idx = 0; a_idx < a_vals.size(); a_idx++){
+            for(int b_idx = 0; b_idx < b_vals.size(); b_idx++){
+                for(int i = 1; i < color->h - 1; i++){
+                    for(int j = 1; j < color->w - 1; j++){
+                        for(int dy = 0; dy < 3; dy++){
+                            for(int dx = 0; dx < 3; dx++){
+                                S[degr_idx][a_idx][b_idx][i][j] += M[degr_idx][a_idx][b_idx][dy+i-1][dx+j-1] * gauss[dy][dx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+        for(int a_idx = 0; a_idx < a_vals.size(); a_idx++){
+            for(int b_idx = 0; b_idx < b_vals.size(); b_idx++){
+                for(int i = 1; i < color->h - 1; i++){
+                    for(int j = 1; j < color->w - 1; j++){
+                        double maxNeighbor = 0.0;
+                        for(int dy = 0; dy < 3; dy++){
+                            for(int dx = 0; dx < 3; dx++){
+                                if(dy != 1 || dx != 1) maxNeighbor = max(maxNeighbor, S[degr_idx][a_idx][b_idx][i+dy-1][j+dx-1]);
+                            }
+                        }
+                        if(S[degr_idx][a_idx][b_idx][i][j] < maxNeighbor) S_nms[degr_idx][a_idx][b_idx][i][j] = 0;
+                        else S_nms[degr_idx][a_idx][b_idx][i][j] = S[degr_idx][a_idx][b_idx][i][j];
+                    }
+                }
+            }
+        }
+    }
+
+    //flatten 5d->2d
+    for(int i = 0; i < color->h; i++){
+        for(int j = 0; j < color->w; j++){
+            double maxresponse = 0.0;
+            for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+                for(int a_idx = 0; a_idx < a_vals.size(); a_idx++){
+                    for(int b_idx = 0; b_idx < b_vals.size(); b_idx++){
+                        maxresponse = max(maxresponse, S[degr_idx][a_idx][b_idx][i][j]);
+                    }
+                }
+            }
+            S_flat_nms[i][j] = maxresponse;
+        }
+    }
+    //gassuain blur flat -> blur matrix
+    for(int i = 1; i < color->h-1; i++){
+        for(int j = 1; j < color->w-1; j++){
+            for(int dy = 0; dy < 3; dy++){
+                for(int dx = 0; dx < 3; dx++){
+                    S_flat[i][j] += S_flat_nms[dy+i-1][dx+j-1] * gauss[dy][dx];
+                }
+            }
+        }
+    }
+    //nms blur -> flat
+    for(int i = 1; i < color->h-1; i++){
+        for(int j = 1; j < color->w-1; j++){
+            double maxNeighbor = 0.0;
+            for(int dy = 0; dy < 3; dy++){
+                for(int dx = 0; dx < 3; dx++){
+                    if(dy != 1 || dx != 1) maxNeighbor = max(maxNeighbor, S_flat[i+dy-1][j + dx -1]);
+                }
+            }
+            if(maxNeighbor > S_flat[i][j]) S_flat_nms[i][j] = 0;
+            else S_flat_nms[i][j] = S_flat[i][j];
         }
     }
 }
@@ -360,46 +467,46 @@ Circle* getCircles(double*** M) {
                 curr++;
             }
             
-        }
-    }
-    return circles;
-}
+//         }
+//     }
+//     return circles;
+// }
 
-bool circleCollision(Circle A, Circle B) {
-    double distance = sqrt((B.x - A.x) * (B.x - A.x) + (B.y - A.y) * (B.y - A.y));
-    return distance < (A.r + B.r);
-}
+// bool circleCollision(Circle A, Circle B) {
+//     double distance = sqrt((B.x - A.x) * (B.x - A.x) + (B.y - A.y) * (B.y - A.y));
+//     return distance < (A.r + B.r);
+// }
 
-Tuple* getCollidingCircles(Circle* circles) {
-    int n = sizeof(circles) / sizeof(circles[0]);
-    int count = 0;
-    for (int i = 0; i < n; i++) {
-        for (int j = i + 1; j < n; j++) {
-            if (circleCollision(circles[i], circles[j])) {
-                count++;
-            }
-        }
-    }
+// Tuple* getCollidingCircles(Circle* circles) {
+//     int n = sizeof(circles) / sizeof(circles[0]);
+//     int count = 0;
+//     for (int i = 0; i < n; i++) {
+//         for (int j = i + 1; j < n; j++) {
+//             if (circleCollision(circles[i], circles[j])) {
+//                 count++;
+//             }
+//         }
+//     }
 
-    Tuple* tuples = new Tuple[count];
-    int curr = 0;
-    for (int i = 0; i < n; i++) {
-        for (int j = i + 1; j < n; j++) {
-            if (circleCollision(circles[i], circles[j])) {
-                tuples[curr].A = i;
-                tuples[curr].B = j;
-                curr++;
-            }
-        }
-    }
-    return tuples;
-}
+//     Tuple* tuples = new Tuple[count];
+//     int curr = 0;
+//     for (int i = 0; i < n; i++) {
+//         for (int j = i + 1; j < n; j++) {
+//             if (circleCollision(circles[i], circles[j])) {
+//                 tuples[curr].A = i;
+//                 tuples[curr].B = j;
+//                 curr++;
+//             }
+//         }
+//     }
+//     return tuples;
+// }
 
 
 // Circle checkOnTop
 
 int main(){
-    string basefile = "cells";
+    string basefile = "coins";
     string filename = "images/" + basefile + ".txt";
     std::ifstream fin(filename);
     int h, w;
@@ -531,23 +638,43 @@ int main(){
 
     double *****Mg = (double*****) calloc(360/angular_granularity, sizeof(double****));
     double *****Og = (double*****) calloc(360/angular_granularity, sizeof(double****));
+    double *****S  = (double*****) calloc(360/angular_granularity, sizeof(double****));
+    double *****S_nms  = (double*****) calloc(360/angular_granularity, sizeof(double****));
     for(int i = 0; i < 360/angular_granularity; i++){
         Mg[i] = (double****) calloc(a_vals.size(), sizeof(double***));
         Og[i] = (double****) calloc(a_vals.size(), sizeof(double***));
+        S[i]  = (double****) calloc(a_vals.size(), sizeof(double***));
+        S_nms[i] = (double****) calloc(a_vals.size(), sizeof(double***));
         for(int a = 0; a < a_vals.size(); a++){
             Mg[i][a] = (double***) calloc(b_vals.size(), sizeof(double**));
             Og[i][a] = (double***) calloc(b_vals.size(), sizeof(double**));
+            S[i][a] = (double***) calloc(b_vals.size(), sizeof(double**));
+            S_nms[i][a] = (double***) calloc(b_vals.size(), sizeof(double**));
             for(int b = 0; b < b_vals.size(); b++){
                 Mg[i][a][b] = (double**) calloc(color->h, sizeof(double*));
                 Og[i][a][b] = (double**) calloc(color->h, sizeof(double*));
+                S[i][a][b] = (double**) calloc(color->h, sizeof(double*));
+                S_nms[i][a][b] = (double**) calloc(color->h, sizeof(double*));
                 for(int y = 0; y < color->h; y++){
                     Mg[i][a][b][y] = (double*) calloc(color->w, sizeof(double));
                     Og[i][a][b][y] = (double*) calloc(color->w, sizeof(double));
+                    S[i][a][b][y] = (double*) calloc(color->w, sizeof(double));
+                    S_nms[i][a][b][y] = (double*) calloc(color->w, sizeof(double));
                     if(print_alloc)printf("allocated (angle,a, b, y) value (%d, %d, %d, %d)\n", i, a, b, y);
                 }
             }
         }
     }
+
+    double **S_flat, **S_flat_nms;
+    S_flat = (double**)calloc(color->h, sizeof(double*));
+    S_flat_nms = (double**)calloc(color->h, sizeof(double*));
+
+    for(int i = 0; i < color->h; i++){
+        S_flat[i] = (double*)calloc(color->w, sizeof(double));
+        S_flat_nms[i] = (double*)calloc(color->w, sizeof(double));
+    }
+
 
     printf("finished allocating Og/Mg\n");
     printf("starting ellipse\n");
@@ -584,6 +711,45 @@ int main(){
         }
         gen_rad_sym_file.close();
     }
+
+    printf("starting ellipse gauss + nms\n");
+    generate_S(Mg, Og, S, S_nms, S_flat, S_flat_nms, color);
+    printf("finished ellipse gauss + nms\n");
+    if(LOG){
+        printf("writing post-proc\n");
+        ofstream radsym_scaled("images/" + basefile + "_gen_scaled.txt");
+        ofstream radsym_scaled_nms("images/" + basefile + "_gen_nms.txt");
+        for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                double scaled_write = 0.0;
+                double nms_write = 0.0;
+                for(int angle = 0; angle < 360/angular_granularity; angle++){
+                    for(int a = 0; a < a_vals.size(); a++){
+                        for(int b = 0; b < b_vals.size(); b++){
+                            scaled_write = max(scaled_write, S[angle][a][b][i][j]);
+                            nms_write    = max(nms_write, S_nms[angle][a][b][i][j]);
+                        }
+                    }
+                }
+                radsym_scaled << scaled_write << endl;
+                radsym_scaled_nms << nms_write << endl;
+            }
+        }
+        radsym_scaled.close();
+        radsym_scaled_nms.close();
+
+        ofstream radsym_scaled_flat("images/" + basefile + "_gen_scaled_flat.txt");
+        ofstream radsym_scaled_flat_nms("images/" + basefile + "_gen_scaled_flatnms.txt");
+         for(int i = 0; i < color->h; i++){
+            for(int j = 0; j < color->w; j++){
+                radsym_scaled_flat << S_flat[i][j] << endl;
+                radsym_scaled_flat_nms << S_flat_nms[i][j] << endl;
+            }
+         }
+         radsym_scaled_flat.close(); radsym_scaled_flat_nms.close();
+    }
+
+
     printf("starting circular symm\n");
     radialSymmetry(gradX, gradY, nms_grads, color, O, M);
     printf("finished circular symm\n");
@@ -645,8 +811,6 @@ int main(){
         radii_file.close();
     }
     
-
-
     unsigned long end = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     printf("execution time : %ld\n", end - start);
