@@ -260,7 +260,8 @@ __global__ void postGaussNMSKernel(double *postGauss, double *gaussNMS, int *rad
     }
 }
 
-__global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, double *gradY, double *gradients, double *gradientDir, Image *color, int* d_a_vals, int* d_b_vals, int width, int height){
+__global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, double *gradY, double *gradients, double *gradientDir, Image *color, 
+                                            int* d_a_vals, int* d_b_vals, int width, int height){
     // Mg [theta][a][b][y][x]
     // Og [theta][a][b][y][x]
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -336,6 +337,104 @@ __global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, 
         }
 
     }
+
+}
+
+__global__ void generate_S(double *M, double *O, double *S, double *S_nms,
+                double *S_flat, double *S_flat_nms, Image* color,int* d_a_vals, int* d_b_vals, int width, int height){
+
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    double gauss[3][3] = {
+        {1.0/16.0, 2.0/16.0, 1.0/16.0},
+        {2.0/16.0, 4.0/16.0, 2.0/16.0},
+        {1.0/16.0, 2.0/16.0, 1.0/16.0}
+    };
+
+    int size_a = sizeof(d_a_vals) / sizeof(int);
+    int size_b = sizeof(d_b_vals) / sizeof(int);
+
+    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+        int degr = degr_idx * angular_granularity;
+        for(int a_idx = 0; a_idx < size_a; a_idx++){
+            int a = d_a_vals[a_idx];
+            for(int b_idx = 0; b_idx < size_b; b_idx++){
+                int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (y * width) + x;
+                int b = d_b_vals[b_idx];
+                double o_hat = max(O[idx], Kn);
+
+                O[idx] = (abs(o_hat) / Kn) * M[idx] / Kn;
+            }
+        }
+    }
+
+    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+        for(int a_idx = 0; a_idx < size_a; a_idx++){
+            for(int b_idx = 0; b_idx < size_b; b_idx++){
+                if( x > 0 && y > 0) {
+                    for(int dy = 0; dy < 3; dy++){
+                        for(int dx = 0; dx < 3; dx++){
+                            int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (y * width) + x;
+                            int idx2 = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + ((dy + y - 1) * width) + dx + x - 1;
+                            S[idx] += M[idx2] * gauss[dy][dx];
+                        }
+                    }
+                }
+                       
+            }
+        }
+    }
+
+    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+        for(int a_idx = 0; a_idx < size_a; a_idx++){
+            for(int b_idx = 0; b_idx < size_b; b_idx++){
+                if( x > 0 && y > 0) {
+                    double maxNeighbor = 0.0;
+                    for(int dy = 0; dy < 3; dy++){
+                        for(int dx = 0; dx < 3; dx++){        
+                            int idx2 = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + ((dy + y - 1) * width) + dx + x - 1;
+                            if(dy != 1 || dx != 1) maxNeighbor = max(maxNeighbor, S[idx2]);
+                        }
+                    }
+                    int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (y * width) + x;
+                    if(S[idx] < maxNeighbor) S_nms[idx] = 0;
+                    else S_nms[idx] = S[idx];
+                }
+                        
+            }
+        }
+    }
+
+    //flatten 5d->2d
+    double maxresponse = 0.0;
+    for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+        for(int a_idx = 0; a_idx < size_a; a_idx++){
+            for(int b_idx = 0; b_idx < size_b; b_idx++){
+                int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (y * width) + x;
+                maxresponse = max(maxresponse, S[idx]);
+            }
+        }
+    }
+    S_flat_nms[y * width + x] = maxresponse;
+
+    //gassuain blur flat -> blur matrix
+
+    for(int dy = 0; dy < 3; dy++){
+        for(int dx = 0; dx < 3; dx++){
+            S_flat[y * width + x] += S_flat_nms[(dy+y-1)*width + dx+x-1] * gauss[dy][dx];
+        }
+    }
+
+    //nms blur -> flat
+    double maxNeighbor = 0.0;
+    for(int dy = 0; dy < 3; dy++){
+        for(int dx = 0; dx < 3; dx++){
+            if(dy != 1 || dx != 1) maxNeighbor = max(maxNeighbor, S_flat[(dy+y-1)*width + dx+x-1]);
+        }
+    }
+    if(maxNeighbor > S_flat[y * width + x]) S_flat_nms[y * width + x] = 0;
+    else S_flat_nms[y * width + x] = S_flat[y * width + x];
 
 }
 
