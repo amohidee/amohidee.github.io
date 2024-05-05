@@ -26,6 +26,8 @@ typedef struct Image {
     }
 } Image;
 
+typedef pair<int,int> pii;
+
 
 __global__ void grayscaleKernel(Pixel* img, double* grayscaleImg, int width, int height) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -127,7 +129,7 @@ __global__ void radialSymmetryKernel(double *gradX, double *gradY, double *gradi
 
 
 //gaussian convolve
-__global__ void gaussConvolve1(double ***M, double **postGauss, int **radii, Image *color, int width, int height){
+__global__ void gaussConvolve1(double *M, double *postGauss, int *radii, Image *color, int width, int height){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -157,7 +159,7 @@ __global__ void gaussConvolve1(double ***M, double **postGauss, int **radii, Ima
 }
 
 
-__global__ void gaussConvolve2(double ***M, double **postGauss, int **radii, Image *color, int width, int height){
+__global__ void gaussConvolve2(double *M, double *postGauss, int *radii, Image *color, int width, int height){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -213,4 +215,130 @@ __global__ void postGaussNMSKernel(double *postGauss, double *gaussNMS, int *rad
             radii[idx] = 0;
         }
     }
+}
+
+__global__ void ellipseResponseMapKernel(double *Mg, double *Og, double *gradX, double *gradY, double *gradients, double *gradientDir, Image *color){
+    // Mg [theta][a][b][y][x]
+    // Og [theta][a][b][y][x]
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int idx = y * width + height;
+    if (x > 0 && y > 0 && x < width - 1 && y < height - 1 && gradients[y*width + x] ) {
+        
+        pii p = {y,x};
+        double dy = (gradY[idx] / gradients[idx]);
+        double dx = (gradX[idx] / gradients[idx]);
+        // printf("(%d, %d) -> {%f, %f} |%f|\n", i, j, gradY[i][j], gradX[i][j], gradients[i][j]);
+        // printf("processing pixel %d, %d\n", i, j);
+        // for(int degr = 0; degr < 360; degr += angular_granularity){
+        for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++) {
+            int degr = degr_idx * angular_granularity;
+            double theta = degr * PI/180.0;
+            for(int a_idx = 1; a_idx < a_vals.size(); a_idx++){
+                for(int b_idx = 1; b_idx < b_vals.size(); b_idx++){
+                    int a = a_vals[a_idx];
+                    int b = b_vals[b_idx];
+                    double G[2][2] = {
+                        {a * cos(theta), -b * sin(theta)},
+                        {a * sin(theta),  b * cos(theta)},
+                    };
+                    // printf("generated G matrix = [ [%f, %f], [%f, %f]]\n", G[0][0], G[0][1], G[1][0], G[1][1]);
+                    double transform_matrix[2][2];
+                    M_mults(G, transform_matrix);
+                    // printf("(%f,%d,%d)generated T matrix = [ [%f, %f], [%f, %f]]\n", 
+                            // theta, a, b, transform_matrix[0][0], transform_matrix[0][1], transform_matrix[1][0], transform_matrix[1][1]);
+
+                    pair<double, double> grad_t = {
+                        dy * transform_matrix[0][0] + dx * transform_matrix[0][1],
+                        dy * transform_matrix[1][0] + dx * transform_matrix[1][1]
+                    };
+                    // printf("generated transformed gradients {%f, %f} from {%f, %f}\n", grad_t.first, grad_t.second, dy, dx);
+                    for(int n = 1; n < MAX_RADII; n++){
+                        pii p_plus =  {p.first + grad_t.first * n, p.second + grad_t.second * n};
+                        pii p_minus = {p.first - grad_t.first * n, p.second - grad_t.second * n};
+                        // printf("for (theta,a,b) = (%d,%d,%d), have points +(%d,%d) -(%d,%d)\n",
+                        //         degr, a, b, p_plus.first, p_plus.second, p_minus.first, p_minus.second);
+                        if(p_plus.first >= 0 && p_plus.first < color->h && p_plus.second >= 0 && p_plus.first < color->w){
+                            int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (p_plus.first * width) + p_plus.second;
+                            // Og[idx] += 1;
+                            atomicAdd(&Og[idx], 1);
+                            // Mg[idx] += gradients[y * width + x];
+                            atomicAdd(&Mg[idx], gradients[y * width + x]);
+                        }
+                        if(p_minus.first >= 0 && p_minus.first < color->h && p_minus.second >= 0 && p_minus.first < color->w){
+                            int idx = (degr_idx * (360/angular_granularity) * MAX_RADII * MAX_RADII * width) + (a_idx * MAX_RADII * MAX_RADII * width) + (b_idx * MAX_RADII * width) + (p_minus.first * width) + p_minus.second;
+                            // Og[idx] -= 1;
+                            atomicAdd(&Og[idx], -1);
+                            // Mg[idx] -= gradients[i][j];
+                            atomicAdd(&Mg[idx], -gradients[y * width + x]);
+                        }
+                    }
+                    
+                }
+            }
+        }
+
+    }
+
+}
+
+
+//gaussian convolve
+__global__ void gaussConvolve1Ellipse(double ***M, double **postGauss, int **radii, Image *color, int width, int height){
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    double gauss[3][3] = {
+        {1.0/16.0, 2.0/16.0, 1.0/16.0},
+        {2.0/16.0, 4.0/16.0, 2.0/16.0},
+        {1.0/16.0, 2.0/16.0, 1.0/16.0}
+    };
+
+    // for(int i = 0; i < 3; i++){
+    //         for(int j = 0; j < 3; j++){
+    //             gauss[i][j] =  1/16 * gauss[i][j];
+    //     }
+    // }
+
+    double t = 0;
+    int best_r = 0;
+    for(int r = 0; r < MAX_RADII; r++){
+        // t = max(M[r][i][j], t);
+        if(M[r*width*height + y*width + x] > t){
+            best_r = r;
+            t = M[r*width*height + y*width + x];
+        }
+    }
+    radii[y*width + x] = best_r;
+    M[0*width*height + y*width + x] = t;
+}
+
+
+__global__ void gaussConvolve2Ellipse(double ***M, double **postGauss, int **radii, Image *color, int width, int height){
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    double gauss[3][3] = {
+        {1.0/16.0, 2.0/16.0, 1.0/16.0},
+        {2.0/16.0, 4.0/16.0, 2.0/16.0},
+        {1.0/16.0, 2.0/16.0, 1.0/16.0}
+    };
+
+    // printf("(%d, %d)", i, j);
+    double g = 0;
+    for(int dy = 0; dy < 3; dy++){
+        for(int dx = 0; dx < 3; dx++){
+            // printf("(%d, %d), %f || ", dy, dx, gauss[dy][dx]);
+            g += M[(y + dy) * width + (x + dx)] * gauss[dy][dx];
+            if(g != 0){
+                // printf("(%d,%d) %f, %f\n", i, j, M[0][dy+i-1][dx+j-1], gauss[dy][dx]);
+            }
+        }
+    }
+    // printf("\n");
+    // printf("(%d,%d)->%f\n", i,j, g);
+    postGauss[y * width + x] = (g > THRESH) ? g : 0;
+
+
+
 }
