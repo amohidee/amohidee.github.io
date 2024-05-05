@@ -467,40 +467,40 @@ Circle* getCircles(double*** M) {
                 curr++;
             }
             
-//         }
-//     }
-//     return circles;
-// }
+        }
+    }
+    return circles;
+}
 
-// bool circleCollision(Circle A, Circle B) {
-//     double distance = sqrt((B.x - A.x) * (B.x - A.x) + (B.y - A.y) * (B.y - A.y));
-//     return distance < (A.r + B.r);
-// }
+bool circleCollision(Circle A, Circle B) {
+    double distance = sqrt((B.x - A.x) * (B.x - A.x) + (B.y - A.y) * (B.y - A.y));
+    return distance < (A.r + B.r);
+}
 
-// Tuple* getCollidingCircles(Circle* circles) {
-//     int n = sizeof(circles) / sizeof(circles[0]);
-//     int count = 0;
-//     for (int i = 0; i < n; i++) {
-//         for (int j = i + 1; j < n; j++) {
-//             if (circleCollision(circles[i], circles[j])) {
-//                 count++;
-//             }
-//         }
-//     }
+Tuple* getCollidingCircles(Circle* circles) {
+    int n = sizeof(circles) / sizeof(circles[0]);
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (circleCollision(circles[i], circles[j])) {
+                count++;
+            }
+        }
+    }
 
-//     Tuple* tuples = new Tuple[count];
-//     int curr = 0;
-//     for (int i = 0; i < n; i++) {
-//         for (int j = i + 1; j < n; j++) {
-//             if (circleCollision(circles[i], circles[j])) {
-//                 tuples[curr].A = i;
-//                 tuples[curr].B = j;
-//                 curr++;
-//             }
-//         }
-//     }
-//     return tuples;
-// }
+    Tuple* tuples = new Tuple[count];
+    int curr = 0;
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (circleCollision(circles[i], circles[j])) {
+                tuples[curr].A = i;
+                tuples[curr].B = j;
+                curr++;
+            }
+        }
+    }
+    return tuples;
+}
 
 
 // Circle checkOnTop
