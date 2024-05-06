@@ -1,15 +1,18 @@
 #include <bits/stdc++.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <thrust/device_vector.h>
 
 using namespace std;
 
 #define PI 3.14159265358979323846
-#define MAX_RADII 50
+#define MAX_RADII 200
 #define Kn 9.9
 #define THRESH 1000
 #define angular_granularity 60
-#define LOG true
+#define LOG false
+
+#define FNAME "coins" 
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -22,9 +25,8 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 }
 
 // __constant__ __device__ int img_params[2] = {1024, 768};
-string basefile = "coins";
-__constant__ __device__ int img_width = 1024;
-__constant__ __device__  int img_height = 768;
+__constant__ __device__ int img_width = 640;
+__constant__ __device__  int img_height = 640;
 __constant__ __device__ int d_a_vals[4] = {2, 4, 6, 8};
 __constant__ __device__ int d_b_vals[4] = {2, 4, 6, 8};
 
@@ -138,9 +140,89 @@ __global__ void ellipseResponseMapKernel(float *Mg, float *Og, float *gradX, flo
                             }
                             // __syncwarp();
                         }
+                        __syncwarp();
                     }
                 }
             }
+        }
+            
+    }
+}
+
+__global__ void ellipseResponseMapKernelBetter(float *Mg, float *Og, float *gradX, float *gradY, float *gradients, int *idxs, int maxThreads){
+    int fidx = blockIdx.x * blockDim.x + threadIdx.x;
+    if(fidx > maxThreads){ return; }
+    int idx = idxs[fidx];
+    int y = idx / img_width;
+    int x = idx % img_width;
+
+    if(blockIdx.x == 0){
+        printf("(%d, %d)\n", y, x);
+    }
+
+    int size_a = sizeof(d_a_vals) / sizeof(int);
+    int size_b = sizeof(d_b_vals) / sizeof(int);
+    // printf("(%d, %d), %d  - %d\n", y, x, fidx, idx);
+
+    if(y < img_height && y >= 0 && x < img_width && x >= 0){
+        if(gradients[idx] != 0){
+
+            float dy = gradY[idx] / gradients[idx];
+            float dx = gradX[idx] / gradients[idx];
+            for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+                int degr = degr_idx * angular_granularity;
+                float theta = degr * PI / 180.0;
+                for(int a_idx = 1; a_idx < size_a; a_idx++){
+                    for(int b_idx = 1; b_idx < size_b; b_idx++){
+                        // printf("(%d, %d) in (%d, %d, %d)\n", y, x, degr_idx, a_idx, b_idx);
+                        int a = d_a_vals[a_idx];
+                        int b = d_b_vals[b_idx];
+                        float G[2][2] = {
+                            {a * cos(theta), -b * sin(theta)},
+                            {a * sin(theta),  b * cos(theta)},
+                        };
+                        float transform_matrix[2][2];
+                        M_mults(G, transform_matrix);
+                        float grad_t_y = dy * transform_matrix[0][0] + dx * transform_matrix[0][1];
+                        float grad_t_x = dy * transform_matrix[1][0] + dx * transform_matrix[1][1];
+                        // int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+                        //     a_idx * size_b * img_width * img_height +
+                        //     b_idx * img_width * img_height +
+                        //     y * img_width +
+                        //     x;
+                        // printf("(%d, %d), (%f, %f)\n", y, x, grad_t_y, grad_t_x);
+                        for(int n = 1; n < MAX_RADII; n++){
+                            int p_plus_y  = y + grad_t_y * n;
+                            int p_plus_x  = x + grad_t_x * n;
+                            // printf("(%d, %d)-(%d,%d) voted\n", y, x, p_plus_y, p_plus_x);
+                            int p_minus_y = y - grad_t_y * n;
+                            int p_minus_x = x - grad_t_x * n;
+                            if(p_plus_y >= 0 && p_plus_y < img_height && p_plus_x >= 0 && p_plus_x < img_width){
+                                int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+                                            a_idx * size_b * img_width * img_height +
+                                            b_idx * img_width * img_height +
+                                            p_plus_y * img_width +
+                                            p_plus_x;
+                                Mg[idx5d] += gradients[idx];
+                            }
+                            // __syncwarp();
+                            if(p_minus_y >= 0 && p_minus_y < img_height && p_minus_x >= 0 && p_minus_x < img_width){
+                                int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+                                            a_idx * size_b * img_width * img_height +
+                                            b_idx * img_width * img_height +
+                                            p_minus_y * img_width +
+                                            p_minus_x;
+                                Mg[idx5d] -= gradients[idx];
+                            }
+                            // __syncwarp();
+                        }
+                        
+                    }
+                }
+                // __syncwarp();
+            }
+        } else {
+            // printf("%d/%d - %d- (%d, %d) spawned unnecessarily\n", fidx, idx, maxThreads, y, x);
         }
             
     }
@@ -315,6 +397,8 @@ __global__ void generate_S4(float *M, float *O, float *S, float *S_nms,
     else S_flat_nms[y * img_width + x] = S_flat[y * img_width + x];
 }
 
+
+
 __global__ void grayscaleKernel(int *color_image_d, float *grayscaleImg) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -411,6 +495,42 @@ __global__ void NMSKernel(float *gradients, float *gradientDir, float *nms_gradi
                 nms_gradients[idx] = gradients[idx];
             } else {
                 nms_gradients[idx] = 0;
+            }
+        }
+    }
+    // __syncthreads();
+}
+
+__global__ void NMSKernelIndicator(float *gradients, float *gradientDir, float *nms_gradients, int *non_zeros) {
+
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x > 0 && y > 0 && x < img_width - 1 && y < img_height - 1) {
+        int idx = y * img_width + x;
+        float n1, n2;
+        if (gradients[idx] != 0) {
+            float dir = gradientDir[idx];
+            if (dir > PI / 4 || dir < -PI / 4) {
+                n1 = gradients[(y - 1) * img_width + x];
+                n2 = gradients[(y + 1) * img_width + x];
+            } else if (dir > 0) {
+                n1 = gradients[(y - 1) * img_width + (x + 1)];
+                n2 = gradients[(y + 1) * img_width + (x - 1)];
+            } else if (dir > -PI / 4) {
+                n1 = gradients[(y + 1) * img_width + (x + 1)];
+                n2 = gradients[(y - 1) * img_width + (x - 1)];
+            } else {
+                n1 = 0;
+                n2 = 0;
+            }
+
+            if (gradients[idx] >= n1 && gradients[idx] >= n2) {
+                nms_gradients[idx] = gradients[idx];
+                non_zeros[idx] = 1;
+            } else {
+                nms_gradients[idx] = 0;
+                non_zeros[idx] = 0;
             }
         }
     }
@@ -520,10 +640,30 @@ __global__ void postGaussNMSKernel(float *postGauss, float *gaussNMS, int *radii
     }
 }
 
+__global__ void organise_indices(int* non_zeros_scanned, int *store_results,int *blockKeys){
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int testbsize = 16;
+
+    int block_x = x / testbsize;
+    int block_y = y / testbsize;
+    int num_blocks_width = img_width / testbsize;
+    int num_blocks_height = img_height / testbsize;
+    if(y != 0 || x != 0){
+        if(non_zeros_scanned[y * img_width + x] > non_zeros_scanned[y * img_width + x -1]){
+            int real_idx = non_zeros_scanned[y * img_width + x];
+            store_results[real_idx] = (y * img_width + x);
+            // printf("stored index %d\n",real_idx);
+            blockKeys[real_idx]     = (block_y * num_blocks_width + block_x);
+        }
+    }
+}
+
 //cpu
 unsigned long
 driverCuda(){
-
+    string basefile = "cells";
     string filename = "images/" + basefile + ".txt";
     ifstream fin(filename);
     fin >> img_width_c >> img_height_c;
@@ -546,7 +686,7 @@ driverCuda(){
     unsigned long start = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     //determine kernel call params
-    dim3 blockDim(16,16, 1);
+    dim3 blockDim(32,32, 1);
     dim3 gridDim((img_width_c + blockDim.x - 1) / blockDim.x,
                  (img_height_c + blockDim.y - 1) / blockDim.y,
                  1);
@@ -601,7 +741,7 @@ driverCuda(){
     cudaThreadSynchronize();
     printf("grayscale end\n");
 
-    if(false){
+    if(LOG){
         float *grayscale_c = (float*) malloc(img_height_c * img_width_c * sizeof(float));
         cudaMemcpy(grayscale_c, grayscaleImage_d, img_width_c * img_height_c * sizeof(float), cudaMemcpyDeviceToHost);
         ofstream gray_file("images_cuda/" + basefile + "_gray.txt");
@@ -630,8 +770,12 @@ driverCuda(){
         grad_file.close();
     }
 
+    thrust::device_vector<int> non_zero_grads(img_height_c * img_width_c);
+
     printf("NMS start\n");
-    NMSKernel<<<gridDim,blockDim>>>(gradients_d, gradientDir_d, nms_gradients_d);
+    // NMSKernel<<<gridDim,blockDim>>>(gradients_d, gradientDir_d, nms_gradients_d);
+    NMSKernelIndicator<<<gridDim,blockDim>>>(gradients_d, gradientDir_d, nms_gradients_d,
+                                            thrust::raw_pointer_cast(non_zero_grads.data()));
     cudaThreadSynchronize();
     printf("NMS end\n");
 
@@ -666,9 +810,26 @@ driverCuda(){
 
     */
 
+    //inclusive scan 
+    thrust::inclusive_scan(non_zero_grads.begin(), non_zero_grads.end(), non_zero_grads.begin());
+    // int *store_results; cudaMalloc(&store_results, img_width_c * img_height_c * sizeof(int));
+
+    thrust::device_vector<int> store_results(img_height_c * img_width_c);
+    thrust::device_vector<int> blockKeys(img_height_c * img_width_c);
+    organise_indices<<<gridDim, blockDim>>>(thrust::raw_pointer_cast(non_zero_grads.data()), thrust::raw_pointer_cast(store_results.data()),
+                                            thrust::raw_pointer_cast(blockKeys.data()));
+    int num_nonzero_grads_c = -1;
+    cudaMemcpy( &num_nonzero_grads_c,&(thrust::raw_pointer_cast(non_zero_grads.data())[img_width_c * img_height_c - 1]), sizeof(int), cudaMemcpyDeviceToHost);
+    printf("THERE ARE %d NON-ZERO-GRADS TO PROCESS\n", num_nonzero_grads_c);
+
+    thrust::sort_by_key(blockKeys.begin(), blockKeys.begin() +  num_nonzero_grads_c, store_results.begin());
+
     printf("ellipse response map start\n");
-    // ellipseResponseMapKernel<<<gridDim,blockDim>>>(Mg_d, Og_d, gradX_d, gradY_d, nms_gradients_d, gradientDir_d);
-    ellipseResponseMapKernel<<<gridDim, blockDim>>>(Mg_d, Og_d, gradX_d, gradY_d, nms_gradients_d);
+    //theoretically, each one should have work to do
+    int threadsPerBlock = 16; int numBlocks = (num_nonzero_grads_c + (threadsPerBlock - 1)) / threadsPerBlock;
+    ellipseResponseMapKernelBetter<<<numBlocks, threadsPerBlock>>>(Mg_d, Og_d, gradX_d, gradY_d, nms_gradients_d,
+                                                                   thrust::raw_pointer_cast(store_results.data()), non_zero_grads[img_width_c * img_height_c - 1]);
+    // ellipseResponseMapKernel<<<gridDim, blockDim>>>(Mg_d, Og_d, gradX_d, gradY_d, nms_gradients_d);
     cudaThreadSynchronize();
     printf("ellipse resposne map end\n");
 

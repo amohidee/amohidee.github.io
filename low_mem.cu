@@ -9,7 +9,7 @@ using namespace std;
 #define Kn 9.9
 #define THRESH 1000
 #define angular_granularity 60
-#define LOG true
+#define LOG false
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -81,12 +81,30 @@ __device__ int get_2d_idx(int i, int j){
     return (i * img_width) + j;
 }
 
+__device__ int clamp(int l, int v, int h){
+    if(v < l)return l;
+    if(v > h)return h;
+    return v;
+}
+
+#define sm_gran 6
 __global__ void ellipseResponseMapKernel(float *Mg, float *Og, float *gradX, float *gradY, float *gradients){
+    
+    __shared__ float votes[360/angular_granularity][4][4][sm_gran][sm_gran];
+    __shared__ int tlX;
+    __shared__ int tlY;
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if(threadIdx.x == 0 && threadIdx.y == 0){
+        tlX = x - MAX_RADII;
+        tlY = y - MAX_RADII;
+    }
+    __syncwarp();
     int size_a = sizeof(d_a_vals) / sizeof(int);
     int size_b = sizeof(d_b_vals) / sizeof(int);
     int idx = y * img_width + x;
+    float lwidth = 132;
+    float lheight = 132;
     if(y < img_height && y >= 0 && x < img_width && x >= 0){
         if(gradients[idx] != 0){
 
@@ -121,20 +139,31 @@ __global__ void ellipseResponseMapKernel(float *Mg, float *Og, float *gradX, flo
                             int p_minus_y = y - grad_t_y * n;
                             int p_minus_x = x - grad_t_x * n;
                             if(p_plus_y >= 0 && p_plus_y < img_height && p_plus_x >= 0 && p_plus_x < img_width){
-                                int idx5d = degr_idx * size_a * size_b * img_width * img_height +
-                                            a_idx * size_b * img_width * img_height +
-                                            b_idx * img_width * img_height +
-                                            p_plus_y * img_width +
-                                            p_plus_x;
-                                Mg[idx5d] += gradients[idx];
+                                // int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+                                //             a_idx * size_b * img_width * img_height +
+                                //             b_idx * img_width * img_height +
+                                //             p_plus_y * img_width +
+                                //             p_plus_x;
+                                // Mg[idx5d] += gradients[idx];
+                                int lX = clamp(0, p_plus_x - tlX, 131);
+                                int lY = clamp(0, p_plus_y - tlY, 131);
+                                int vpX = lX / (lwidth / sm_gran);
+                                int vpY = lY / (lheight / sm_gran);
+                                // printf("(%d, %d) - (%d, %d) - (%d, %d) - (%d, %d)\n", tlX, tlY, p_plus_x, p_plus_y, lX, lY, vpX, vpY);
+                                votes[degr_idx][a_idx][b_idx][vpY][vpX] += gradients[idx];
                             }
                             if(p_minus_y >= 0 && p_minus_y < img_height && p_minus_x >= 0 && p_minus_x < img_width){
-                                int idx5d = degr_idx * size_a * size_b * img_width * img_height +
-                                            a_idx * size_b * img_width * img_height +
-                                            b_idx * img_width * img_height +
-                                            p_minus_y * img_width +
-                                            p_minus_x;
-                                Mg[idx5d] -= gradients[idx];
+                                // int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+                                //             a_idx * size_b * img_width * img_height +
+                                //             b_idx * img_width * img_height +
+                                //             p_minus_y * img_width +
+                                //             p_minus_x;
+                                // Mg[idx5d] -= gradients[idx];
+                                int lX = clamp(0, p_minus_x - tlX, 131);
+                                int lY = clamp(0, p_minus_y - tlY, 131);
+                                int vpX = lX / (lwidth / sm_gran);
+                                int vpY = lY / (lheight / sm_gran);
+                                votes[degr_idx][a_idx][b_idx][vpY][vpX] -= gradients[idx];
                             }
                             // __syncwarp();
                         }
@@ -142,8 +171,49 @@ __global__ void ellipseResponseMapKernel(float *Mg, float *Og, float *gradX, flo
                 }
             }
         }
-            
     }
+
+    __syncwarp();
+
+    int numThreads = blockDim.x * blockDim.y;
+    int numMaps = (360/angular_granularity) * size_a * size_b * sm_gran * sm_gran;
+    for(int i = (threadIdx.y * blockDim.x + threadIdx.x); i < numMaps; i+= numThreads){
+        int degr_idx = i / (size_a * size_b * sm_gran * sm_gran);
+        int a_idx = (i % (size_a * size_b * sm_gran * sm_gran)) /  (size_b * sm_gran * sm_gran);
+        int b_idx = (i % (size_b * sm_gran * sm_gran)) /  (sm_gran * sm_gran);
+        int lcly    = (i % (sm_gran * sm_gran)) / (sm_gran);
+        int lclx =     i % sm_gran;
+
+        int vy = tlY + sm_gran * lcly;
+        int vx = tlX + sm_gran * lclx;
+        printf("(%d/%d) -> %d, %d, %d, %d, %d -> (%d,%d)\n", i,numMaps, degr_idx, a_idx, b_idx, lcly, lclx, vy, vx);
+        int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+                                            a_idx * size_b * img_width * img_height +
+                                            b_idx * img_width * img_height +
+                                            vy * img_width +
+                                            vx;
+        if(vx >= 0 && vx < img_width && vy >= 0 && vy < img_height)
+            Mg[idx5d] += votes[degr_idx][a_idx][b_idx][threadIdx.y][threadIdx.x];
+    }
+    
+
+    // if(threadIdx.x < sm_gran && threadIdx.y < sm_gran){
+    //     int vy = tlY + sm_gran * threadIdx.y;
+    //     int vx = tlX + sm_gran * threadIdx.x;
+    //     if(vy >= 0 && vy < img_height && vx >= 0 && vx < img_width)
+    //     for(int degr_idx = 0; degr_idx < 360/angular_granularity; degr_idx++){
+    //         for(int a_idx = 1; a_idx < size_a; a_idx++){
+    //             for(int b_idx = 1; b_idx < size_b; b_idx++){
+    //                 int idx5d = degr_idx * size_a * size_b * img_width * img_height +
+    //                                         a_idx * size_b * img_width * img_height +
+    //                                         b_idx * img_width * img_height +
+    //                                         vy * img_width +
+    //                                         vx;
+    //                 Mg[idx5d] += votes[degr_idx][a_idx][b_idx][threadIdx.y][threadIdx.x];
+    //             }
+    //         }
+    //     }
+    // }
 }
 
 __global__ void checkMgExists(float *Mg){
@@ -546,7 +616,7 @@ driverCuda(){
     unsigned long start = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     //determine kernel call params
-    dim3 blockDim(16,16, 1);
+    dim3 blockDim(32,32, 1);
     dim3 gridDim((img_width_c + blockDim.x - 1) / blockDim.x,
                  (img_height_c + blockDim.y - 1) / blockDim.y,
                  1);
