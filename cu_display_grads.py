@@ -4,7 +4,7 @@ import numpy as np
 
 # x  = 768
 # y = 1024
-fname = 'cells'
+fname = 'coins'
 
 with open(f"images/{fname}.txt",'r') as f:
     ln = (f.readline()[:-1]).split(" ")
@@ -50,12 +50,19 @@ def draw_circles(img_path):
     plt.imshow(np.transpose(img))
     plt.show()
 
-#imp = f"images_cuda/{fname}_gray.txt"
-#proc_file(imp)
-# imp = f"images_cuda/{fname}_gradients.txt"
-# proc_file(imp)
+
+imp = f"images_cuda/{fname}_gradients.txt"
+proc_file(imp)
+imp = f"images_cuda/{fname}_nms.txt"
+proc_file(imp)
+imp = f"images_cuda/{fname}_postGauss.txt"
+proc_file(imp)
+imp = f"images_cuda/{fname}_genblurred.txt"
+proc_file(imp)
+imp = f"images_cuda/{fname}_gennms.txt"
+proc_file(imp)
 imp = f"images_cuda/{fname}_gaussnms.txt"
 proc_file(imp)
 draw_circles("")
-# imp = f"images_cuda/{fname}_radii.txt"
-# proc_file(imp)
+imp = f"images_cuda/{fname}_radii.txt"
+proc_file(imp)

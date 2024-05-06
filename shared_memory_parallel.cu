@@ -22,8 +22,8 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 }
 
 // __constant__ __device__ int img_params[2] = {1024, 768};
-__constant__ __device__ int img_width = 640;
-__constant__ __device__  int img_height = 640;
+__constant__ __device__ int img_width = 1024;
+__constant__ __device__  int img_height = 768;
 __constant__ __device__ int d_a_vals[4] = {2, 4, 6, 8};
 __constant__ __device__ int d_b_vals[4] = {2, 4, 6, 8};
 
@@ -591,7 +591,7 @@ __global__ void postGaussNMSKernel(float *postGauss, float *gaussNMS, int *radii
 //cpu
 unsigned long
 driverCuda(){
-    string basefile = "cells";
+    string basefile = "coins";
     string filename = "images/" + basefile + ".txt";
     ifstream fin(filename);
     fin >> img_width_c >> img_height_c;
@@ -703,6 +703,18 @@ driverCuda(){
     cudaThreadSynchronize();
     printf("NMS end\n");
 
+    if(LOG){
+        float *nms_gradients_c = (float*) malloc(img_height_c * img_width_c * sizeof(float));
+        cudaMemcpy(nms_gradients_c, nms_gradients_d, img_width_c * img_height_c * sizeof(float), cudaMemcpyDeviceToHost);
+        ofstream grad_file("images_cuda/" + basefile + "_nms.txt");
+        for(int i = 0; i < img_height_c; i++){
+            for(int j = 0; j < img_width_c; j++){
+                grad_file << nms_gradients_c[i * img_width_c + j] << endl;
+            }
+        }
+        grad_file.close();
+    }
+
     printf("radial symmetry calculation start\n");
     radialSymmetryKernel<<<gridDim,blockDim>>>(gradX_d, gradY_d, gradients_d, O_d, M_d);
     cudaThreadSynchronize();
@@ -801,8 +813,8 @@ driverCuda(){
     
 
 
-    // cudaMemcpy(postGauss_c, postGauss_d, img_width_c * img_height_c * sizeof(float), cudaMemcpyDeviceToHost);
-    // cudaMemcpy(gaussNMS_c, gaussNMS_d, img_width_c * img_height_c * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(postGauss_c, postGauss_d, img_width_c * img_height_c * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(gaussNMS_c, gaussNMS_d, img_width_c * img_height_c * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(radii_c, radii_d, img_width_c * img_height_c * sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(S_flat_c, S_flat_d, img_width_c * img_height_c * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(S_flat_nms_c, S_nms_flat_d, img_width_c * img_height_c * sizeof(float), cudaMemcpyDeviceToHost);
@@ -810,6 +822,14 @@ driverCuda(){
     unsigned long end = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     if(LOG){
+        ofstream postGauss("images_cuda/" + basefile + "_postGauss.txt");
+        for(int i = 0; i < img_height_c; i++){
+            for(int j = 0; j < img_width_c; j++){
+                postGauss << postGauss_c[i * img_width_c + j] << endl;
+            }
+        }
+        postGauss.close();
+
         ofstream post_gauss_nms("images_cuda/" + basefile + "_gaussnms.txt");
         for(int i = 0; i < img_height_c; i++){
             for(int j = 0; j < img_width_c; j++){
