@@ -9,7 +9,7 @@ using namespace std;
 #define Kn 9.9
 #define THRESH 1000
 #define angular_granularity 60
-#define LOG false
+#define LOG true
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -26,6 +26,10 @@ __constant__ __device__ int img_width = 640;
 __constant__ __device__  int img_height = 640;
 __constant__ __device__ int d_a_vals[4] = {2, 4, 6, 8};
 __constant__ __device__ int d_b_vals[4] = {2, 4, 6, 8};
+
+
+#define SIZE_A 4
+#define SIZE_B 4
 
 const vector<int> a_vals = {2, 4, 6, 8};
 const vector<int> b_vals = {2, 4, 6, 8};
@@ -80,12 +84,55 @@ __device__ int get_2d_idx(int i, int j){
     return (i * img_width) + j;
 }
 
-__global__ void ellipseResponseMapKernel(float *Mg, float *Og, float *gradX, float *gradY, float *gradients){
+
+__global__ void precomputeTransMatrices(float *transMatrices, int size_a, int size_b, int angularGranularity) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalConfigurations = (360 / angularGranularity) * size_a * size_b;
+
+    if (idx < totalConfigurations) {
+        // go in order of degr_idx -> a_idx -> b_idx
+        int degr_idx = idx / (size_a * size_b);
+        int a_idx = (idx % (size_a * size_b)) / size_b;
+        int b_idx = (idx % (size_a * size_b)) % size_b;
+
+        float theta = degr_idx * angularGranularity * PI / 180.0; 
+        int a = d_a_vals[a_idx];
+        int b = d_b_vals[b_idx];
+
+
+        float G[2][2] = {
+            {a * cos(theta), -b * sin(theta)},
+            {a * sin(theta),  b * cos(theta)},
+        };
+        float transform_matrix[2][2];
+        M_mults(G, transform_matrix);
+
+
+        // Store the matrix in the global array
+        int matrixIdx = (degr_idx * size_a * size_b + a_idx * size_b + b_idx) * 4;
+        transMatrices[matrixIdx] = transform_matrix[0][0];
+        transMatrices[matrixIdx + 1] = transform_matrix[0][1];
+        transMatrices[matrixIdx + 2] = transform_matrix[1][0];
+        transMatrices[matrixIdx + 3] = transform_matrix[1][1];
+    }
+}
+
+
+__global__ void ellipseResponseMapKernel(float *Mg, float *Og, float *gradX, float *gradY, float *gradients, float *transMatrices){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     int size_a = sizeof(d_a_vals) / sizeof(int);
     int size_b = sizeof(d_b_vals) / sizeof(int);
     int idx = y * img_width + x;
+
+    __shared__ float tm[(360/angular_granularity) * SIZE_A * SIZE_B * 2 * 2];
+
+    if (idx < (360/angular_granularity) * size_a * size_b * 4) {
+        tm[idx] = transMatrices[idx];
+    }
+    
+    __syncwarp();
+
     if(y < img_height && y >= 0 && x < img_width && x >= 0){
         if(gradients[idx] != 0){
 
@@ -99,14 +146,35 @@ __global__ void ellipseResponseMapKernel(float *Mg, float *Og, float *gradX, flo
                         // printf("(%d, %d) in (%d, %d, %d)\n", y, x, degr_idx, a_idx, b_idx);
                         int a = d_a_vals[a_idx];
                         int b = d_b_vals[b_idx];
+                        
+                        /*
                         float G[2][2] = {
                             {a * cos(theta), -b * sin(theta)},
                             {a * sin(theta),  b * cos(theta)},
                         };
                         float transform_matrix[2][2];
                         M_mults(G, transform_matrix);
+                        */
+                        
+                        
+
+
+                        
+                        int tmIdx = degr_idx * size_a * size_b *4 + a_idx * size_b *4 + b_idx*4;
+                        float transform_matrix[2][2];
+                        transform_matrix[0][0] = tm[tmIdx];
+                        transform_matrix[0][1] = tm[tmIdx + 1];
+                        transform_matrix[1][0] = tm[tmIdx + 2];
+                        transform_matrix[1][1] = tm[tmIdx + 3];
+                        
+
                         float grad_t_y = dy * transform_matrix[0][0] + dx * transform_matrix[0][1];
                         float grad_t_x = dy * transform_matrix[1][0] + dx * transform_matrix[1][1];
+                        
+                        
+                        
+
+
                         // int idx5d = degr_idx * size_a * size_b * img_width * img_height +
                         //     a_idx * size_b * img_width * img_height +
                         //     b_idx * img_width * img_height +
@@ -664,10 +732,22 @@ driverCuda(){
         ELLIPSES FROM HERE, CIRCLES BEFORE
 
     */
+    
+    printf("precompute trans matrices start\n");
+    int size_a = sizeof(d_a_vals) / sizeof(int);
+    int size_b = sizeof(d_b_vals) / sizeof(int);
+    const int degr_count = 360 / angular_granularity;
+    float* transMatrices;
+    cudaMalloc(&transMatrices, degr_count * a_vals.size() * b_vals.size() * sizeof(float));
+    int threadsPerBlock = 16*16;
+    int numBlocks = (degr_count * a_vals.size() * b_vals.size() + threadsPerBlock - 1) / threadsPerBlock;
+    precomputeTransMatrices<<<numBlocks, threadsPerBlock>>>(transMatrices, size_a, size_b, angular_granularity);
+    cudaThreadSynchronize();
+    printf("precompute trans matrices end\n");
 
     printf("ellipse response map start\n");
     // ellipseResponseMapKernel<<<gridDim,blockDim>>>(Mg_d, Og_d, gradX_d, gradY_d, nms_gradients_d, gradientDir_d);
-    ellipseResponseMapKernel<<<gridDim, blockDim>>>(Mg_d, Og_d, gradX_d, gradY_d, nms_gradients_d);
+    ellipseResponseMapKernel<<<gridDim, blockDim>>>(Mg_d, Og_d, gradX_d, gradY_d, nms_gradients_d, transMatrices);
     cudaThreadSynchronize();
     printf("ellipse resposne map end\n");
 
