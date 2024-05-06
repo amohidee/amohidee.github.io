@@ -85,9 +85,10 @@ __device__ int get_2d_idx(int i, int j){
 }
 
 
-__global__ void precomputeTransMatrices(float *transMatrices, int size_a, int size_b, int angularGranularity) {
+__global__ void precomputeTransMatrices(float *transMatrices, int size_a, int size_b) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int totalConfigurations = (360 / angularGranularity) * size_a * size_b;
+    int totalConfigurations = (360 / angular_granularity) * size_a * size_b;
+    int degr_count = (360 / angular_granularity);
 
     if (idx < totalConfigurations) {
         // go in order of degr_idx -> a_idx -> b_idx
@@ -95,7 +96,7 @@ __global__ void precomputeTransMatrices(float *transMatrices, int size_a, int si
         int a_idx = (idx % (size_a * size_b)) / size_b;
         int b_idx = (idx % (size_a * size_b)) % size_b;
 
-        float theta = degr_idx * angularGranularity * PI / 180.0; 
+        float theta = degr_idx * angular_granularity * PI / 180.0; 
         int a = d_a_vals[a_idx];
         int b = d_b_vals[b_idx];
 
@@ -148,24 +149,24 @@ __global__ void ellipseResponseMapKernel(float *Mg, float *Og, float *gradX, flo
                         int b = d_b_vals[b_idx];
                         
                         /*
-                        float G[2][2] = {
-                            {a * cos(theta), -b * sin(theta)},
-                            {a * sin(theta),  b * cos(theta)},
-                        };
-                        float transform_matrix[2][2];
-                        M_mults(G, transform_matrix);
-                        */
-                        
-                        
-
-
-                        
                         int tmIdx = degr_idx * size_a * size_b *4 + a_idx * size_b *4 + b_idx*4;
                         float transform_matrix[2][2];
                         transform_matrix[0][0] = tm[tmIdx];
                         transform_matrix[0][1] = tm[tmIdx + 1];
                         transform_matrix[1][0] = tm[tmIdx + 2];
                         transform_matrix[1][1] = tm[tmIdx + 3];
+                        */
+                        
+                        float G[2][2] = {
+                            {a * cos(theta), -b * sin(theta)},
+                            {a * sin(theta),  b * cos(theta)},
+                        };
+                        float transform_matrix[2][2];
+                        M_mults(G, transform_matrix);
+
+
+                        
+                        
                         
 
                         float grad_t_y = dy * transform_matrix[0][0] + dx * transform_matrix[0][1];
@@ -733,17 +734,22 @@ driverCuda(){
 
     */
     
+
+    
     printf("precompute trans matrices start\n");
     int size_a = sizeof(d_a_vals) / sizeof(int);
     int size_b = sizeof(d_b_vals) / sizeof(int);
     const int degr_count = 360 / angular_granularity;
     float* transMatrices;
-    cudaMalloc(&transMatrices, degr_count * a_vals.size() * b_vals.size() * sizeof(float));
+    cudaMalloc(&transMatrices, degr_count * a_vals.size() * b_vals.size() * 4 * sizeof(float));
+    /*
     int threadsPerBlock = 16*16;
     int numBlocks = (degr_count * a_vals.size() * b_vals.size() + threadsPerBlock - 1) / threadsPerBlock;
-    precomputeTransMatrices<<<numBlocks, threadsPerBlock>>>(transMatrices, size_a, size_b, angular_granularity);
+    precomputeTransMatrices<<<numBlocks, threadsPerBlock>>>(transMatrices, size_a, size_b);
     cudaThreadSynchronize();
     printf("precompute trans matrices end\n");
+    */
+    
 
     printf("ellipse response map start\n");
     // ellipseResponseMapKernel<<<gridDim,blockDim>>>(Mg_d, Og_d, gradX_d, gradY_d, nms_gradients_d, gradientDir_d);
